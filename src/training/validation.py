@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from src.data.letterbox import Letterbox
-from src.losses import LossMeter, SegmentationLoss
+from src.losses import LossMeter, build_loss
 from src.progress import ConsoleProgress
 from src.training.metric import AICAccumulator, AICResult
 
@@ -46,7 +46,7 @@ def validate(
     n_bins = config.eval.n_bins
     acc = AICAccumulator(n_bins=n_bins)
     meter = LossMeter()
-    criterion = SegmentationLoss(**config.loss.to_dict())
+    criterion = build_loss(config, aux_weight=0.0, dct_aux_weight=0.0)
 
     for batch in ConsoleProgress.iterate(loader, "Валидация, батчи"):
         images = batch["image"].to(device, non_blocking=True, memory_format=torch.channels_last)

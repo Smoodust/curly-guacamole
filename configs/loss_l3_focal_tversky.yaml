@@ -1,0 +1,14 @@
+# Ablation arm L3: Dice becomes Tversky (alpha=0.3, beta=0.7, gamma=0.75).
+# Dice penalizes a miss and a false alarm equally, so on a tiny mask a cautious
+# model loses almost nothing by staying silent; beta > alpha makes a miss cost more.
+extends: baseline_mixed_original.yaml
+paths:
+  run_name: pvt_v2_b2_loss_l3_focal_tversky
+train:
+  epoch_size: 12000
+loss:
+  name: focal_tversky
+  kwargs:
+    alpha: 0.3
+    beta: 0.7
+    gamma: 0.75

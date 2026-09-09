@@ -1,0 +1,13 @@
+# Ablation arm L5: one minus the batch AIC, from soft Dice and a soft FPR.
+# The harmonic mean shifts gradient to whichever half of the metric is worse.
+extends: baseline_mixed_original.yaml
+paths:
+  run_name: pvt_v2_b2_loss_l5_aic_harmonic
+train:
+  epoch_size: 12000
+loss:
+  name: aic_harmonic
+  kwargs:
+    aic_weight: 1.0
+    area_threshold: 0.01
+    area_mode: rational

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Iterable, Sized
+from collections.abc import Callable, Iterable, Sized
 from dataclasses import dataclass, field
 
 import torch
@@ -16,7 +16,7 @@ from src.eval.metadata import build_metadata
 from src.eval.protocol import EvaluationProtocol
 from src.eval.splits import make_stratified_val_folds, train_val_fold_split
 from src.forensic.dct.constants import CHANNELS as FMAP_CHANNELS
-from src.losses import LossMeter, SegmentationLoss
+from src.losses import LossMeter, LossResult, build_loss
 from src.progress import ConsoleProgress
 from src.training.base import set_random_seed
 from src.training.builders import (
@@ -58,11 +58,13 @@ class ExperimentRunner:
         self.device = torch.device(config.train.device)
         self.amp = build_amp(config.train, self.device)
         self.data_workspace = DataWorkspace(config.paths.data_path)
+        self.loss = build_loss(config)
 
     def run(self) -> Run:
         cfg = self.config
         self._check_resume_protocol()
         ConsoleProgress.info(f"Эксперимент {cfg.paths.run_name}: device={self.device}, amp={cfg.train.amp}, seed={cfg.seed}")
+        ConsoleProgress.info(f"Функция потерь: {self.loss}")
         set_random_seed(cfg.seed)
 
         ConsoleProgress.info("Подготовка метаданных и train/val разбиения")
@@ -127,6 +129,7 @@ class ExperimentRunner:
                     amp=self.amp,
                     config=cfg,
                     device=self.device,
+                    loss_fn=self.loss,
                 )
                 state.seen_total += train_result.seen
                 run.info(f"Обучение завершено: loss={train_result.loss:.5f}, примеров={train_result.seen}; валидация EMA")
@@ -220,6 +223,8 @@ class ExperimentRunner:
         if saved_eval.get("resolution", "resized") != cfg.eval.resolution:
             raise ValueError("Cannot resume with a different eval.resolution; choose a new run_name")
         saved_loss = snapshot.get("loss", snapshot)
+        if saved_loss.get("name", "bce_dice") != cfg.loss.name:
+            raise ValueError("Cannot resume with a different loss.name; choose a new run_name")
         for key, default in (("dice_scope", "all"), ("dice_weight", 1.0)):
             if saved_loss.get(key, default) != getattr(cfg.loss, key):
                 raise ValueError(f"Cannot resume with a different loss.{key}; choose a new run_name")
@@ -326,7 +331,8 @@ class ExperimentRunner:
         if validation is not None:
             extra.update({f"val/loss_{key}": value for key, value in validation.loss_components.items()})
             if validation.loss_components:
-                extra["val/loss_main"] = validation.loss_components["bce"] + validation.loss_components["dice"]
+                extra["val/loss_main"] = (validation.loss_components.get("bce", 0.0)
+                                          + validation.loss_components.get("dice", 0.0))
             if validation.fixed is not None:
                 extra.update({"val/aic_fixed": validation.fixed.aic,
                               "val/dice_fixed": validation.fixed.dice_pos,
@@ -372,6 +378,7 @@ class ExperimentRunner:
                 "within_limit": gflops <= 100,
                 "validation_resolution": self.config.eval.resolution,
                 "training_complete": True,
+                "loss": self.config.loss.to_dict(),
             }
         )
 
@@ -387,12 +394,13 @@ def train_one_epoch(
     amp: AmpContext,
     config: ExperimentConfig,
     device: torch.device,
+    loss_fn: Callable[[dict, dict], LossResult] | None = None,
 ) -> EpochTrainResult:
     model.train()
+    criterion = loss_fn or build_loss(config, aux_weight=config.model.aux_weight,
+                                      dct_aux_weight=config.model.dct_aux_weight)
     skipped_steps = 0
     meter = LossMeter()
-    criterion = SegmentationLoss(**config.loss.to_dict(), aux_weight=config.model.aux_weight,
-                                 dct_aux_weight=config.model.dct_aux_weight)
     seen = 0
     negatives = torch.zeros((), device=device)
     total_batches = len(loader) if isinstance(loader, Sized) else None
@@ -461,6 +469,7 @@ __all__ = [
     "EpochTrainResult",
     "ExperimentRunner",
     "TrainingState",
+    "build_loss",
     "run_experiment",
     "train_one_epoch",
     "validate",

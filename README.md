@@ -150,6 +150,55 @@ The model still processes a dense 1024×1024 tensor, so padding does not save FL
 The counted forward includes the masked classification path; preprocessing,
 restoration, and validation histograms remain outside that count.
 
+## Loss ablation
+
+`notebooks/loss_ablation.ipynb` runs `configs/loss_l*.yaml` as one series and
+tabulates the arms. Without Jupyter, the same series runs from the shell:
+
+```bash
+python -m src.training configs/loss_l*.yaml --data-path /workspace/data --csv runs/loss_ablation.csv
+```
+
+The objective is now selected from the config through a registry in
+`src/losses` (`src/losses/README.md` documents the arms, the soft false-positive
+surrogate and how to add another objective). Configs without a `loss:` section
+keep the previous `BCE + Dice + 0.3 cls + aux` formula, verified against the old
+implementation to the last digit, so completed runs stay comparable.
+
+Two hypotheses are under test. First, a mask covering 0.5% of the frame produces
+0.5% of the BCE terms and its gradient is lost in the background: arms L1
+(per-image positive weighting), L2 (focal) and L3 (Tversky with `beta > alpha`)
+each attack it differently. Second, the objective disagrees with the metric:
+AIC scores Dice on positive frames only and charges a negative frame nothing
+until its predicted mask reaches 1% of the frame, whereas Dice on a negative
+frame is already near its maximum penalty for any blob at all. Arm L4 replaces
+that term with a soft false-positive rate at the same 1% threshold; arm L5 also
+replaces the sum with the metric's harmonic mean.
+
+| arm | `loss.name` | change against the control |
+| --- | --- | --- |
+| L0 | `bce_dice` | control, formula unchanged |
+| L1 | `balanced_bce_dice` | positive pixels reweighted per image, up to 20x |
+| L2 | `focal_dice` | focal reweighting, `gamma=2`, term scale preserved |
+| L3 | `focal_tversky` | Dice becomes Tversky (`alpha=0.3`, `beta=0.7`, `gamma=0.75`) |
+| L4 | `aic_surrogate` | Dice over positives only; negatives get a soft FPR at 1% |
+| L5 | `aic_harmonic` | one minus the batch AIC, from soft Dice and soft FPR |
+
+Every arm shares the encoder, fold, seed, augmentation schedule and
+original-resolution validation of `baseline_mixed_original`; only the `loss`
+section, the run name and `epoch_size` differ. The budget is halved to
+`epoch_size: 12000`, so **these scores are not comparable with the completed
+full-budget runs** — L0 is the control for exactly that reason. Promote the
+winning objective into a full-budget config under a new run name before reading
+anything into the absolute number.
+
+Arm L5 estimates both AIC components inside one micro-batch. At
+`batch_size: 4` with a 25% negative fraction some micro-batches hold a single
+negative frame, so its estimate is the noisiest of the six; a larger physical
+batch would suit it better, but changing it here would confound the comparison.
+The saved snapshot records `loss_name`, and resuming a run with a different
+objective is rejected rather than silently continuing a different curve.
+
 ## Submission
 
 From the project root in PowerShell:

@@ -1,7 +1,18 @@
+"""BCE + Dice с dice_scope, глубокой супервизией и DCT-головой — цель до реестра.
+
+Отдельный модуль: на неё опираются регрессионные тесты и старые ноутбуки, а
+`bce_dice` в реестре (см. `legacy._register_bce_dice` внизу) собирает ровно
+этот класс, чтобы не заводить вторую реализацию той же математики.
+"""
+
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
+
+from src.losses.registry import register_loss
 
 
 def soft_dice_loss(logits, targets, smooth=1.0, valid_mask=None):
@@ -23,6 +34,7 @@ def bce_loss(logits, targets, valid_mask=None):
         weighted = (loss * valid_mask).flatten(1).sum(1)
         return (weighted / valid_mask.flatten(1).sum(1).clamp_min(1)).mean()
     return F.binary_cross_entropy_with_logits(logits, targets)
+
 
 @dataclass(frozen=True)
 class LossResult:
@@ -132,3 +144,14 @@ class LossMeter:
 def compute_loss(out, batch, aux_weight: float = 0.0, dct_aux_weight: float = 0.0):
     """Legacy scalar API: BCE + all-image Dice + classifier and auxiliary losses."""
     return SegmentationLoss(aux_weight=aux_weight, dct_aux_weight=dct_aux_weight)(out, batch).total
+
+
+@register_loss("bce_dice")
+def _build_bce_dice(*, aux_weight: float = 0.0, dct_aux_weight: float = 0.0,
+                     dice_scope: str = "all", dice_weight: float = 1.0) -> SegmentationLoss:
+    """Реестровая обёртка над контролем: та же цель, что и до реестра."""
+    return SegmentationLoss(dice_scope=dice_scope, dice_weight=dice_weight,
+                             aux_weight=aux_weight, dct_aux_weight=dct_aux_weight)
+
+
+__all__ = ["LossMeter", "LossResult", "SegmentationLoss", "bce_loss", "compute_loss", "soft_dice_loss"]

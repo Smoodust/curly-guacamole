@@ -340,23 +340,53 @@ class EvalConfig:
 
 @dataclass(frozen=True)
 class LossConfig:
-    # Missing settings preserve historical runs. New ablations opt in explicitly.
+    """Выбор цели обучения из реестра `src.losses` и её параметры.
+
+    `dice_scope`/`dice_weight` относятся только к базовой цели `bce_dice` —
+    missing settings preserve historical runs, new ablations opt in explicitly.
+    Остальные цели реестра получают собственные параметры через `kwargs`.
+    `aux_weight`/`dct_aux_weight` сюда не входят: они же включают
+    соответствующие головы в декодере, поэтому остаются в `model` — иначе
+    конфиг мог бы попросить глубокую супервизию у модели, собранной без неё.
+    """
+
+    name: str = "bce_dice"
     dice_scope: str = "all"
     dice_weight: float = 1.0
+    kwargs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data):
+    def from_dict(cls, data: Mapping[str, Any] | None) -> LossConfig:
+        defaults = cls()
+        if data is None:
+            data = {}
         data = _mapping(data, "loss")
-        _check_keys(data, set(), "loss", optional={"dice_scope", "dice_weight"})
-        config = cls(dice_scope=data.get("dice_scope", "all"), dice_weight=float(data.get("dice_weight", 1.0)))
-        if config.dice_scope not in {"all", "positive"}:
-            raise ValueError("loss.dice_scope must be 'all' or 'positive'")
-        if not 0 <= config.dice_weight < float("inf"):
-            raise ValueError("loss.dice_weight must be finite and non-negative")
+        _check_keys(data, set(), "loss", optional={"name", "dice_scope", "dice_weight", "kwargs"})
+        config = cls(
+            name=_non_empty_str(data.get("name", defaults.name), "loss.name"),
+            dice_scope=str(data.get("dice_scope", defaults.dice_scope)),
+            dice_weight=float(data.get("dice_weight", defaults.dice_weight)),
+            kwargs=dict(_mapping(data.get("kwargs", {}), "loss.kwargs")),
+        )
+        config.validate()
         return config
 
-    def to_dict(self):
-        return {"dice_scope": self.dice_scope, "dice_weight": self.dice_weight}
+    def validate(self) -> None:
+        if self.dice_scope not in {"all", "positive"}:
+            raise ValueError("loss.dice_scope must be 'all' or 'positive'")
+        if not 0 <= self.dice_weight < float("inf"):
+            raise ValueError("loss.dice_weight must be finite and non-negative")
+        reserved = {"cls_weight", "aux_weight", "dct_aux_weight"}.intersection(self.kwargs)
+        if reserved:
+            raise ValueError("loss.kwargs must not override cls_weight or aux_weight or dct_aux_weight")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "dice_scope": self.dice_scope,
+            "dice_weight": self.dice_weight,
+            "kwargs": dict(self.kwargs),
+        }
 
 
 @dataclass(frozen=True)
@@ -383,7 +413,7 @@ class ExperimentConfig:
             dataset=DatasetConfig.from_dict(_required(data, "dataset", "experiment")),
             train=TrainConfig.from_dict(_required(data, "train", "experiment")),
             eval=EvalConfig.from_dict(data.get("eval")),
-            loss=LossConfig.from_dict(data.get("loss", {})),
+            loss=LossConfig.from_dict(data.get("loss")),
         )
         if config.seed < 0:
             raise ValueError("seed must be non-negative")
@@ -415,6 +445,8 @@ class ExperimentConfig:
                 plain.update(_augmentation_to_dict(section))
             else:
                 plain.update(section.to_dict())
+        # Ключи цели обучения ("name") слишком общие для плоского снимка.
+        plain.update({f"loss_{key}": value for key, value in self.loss.to_dict().items()})
         return plain
 
 
@@ -572,8 +604,8 @@ __all__ = [
     "DatasetConfig",
     "EvalConfig",
     "ExperimentConfig",
-    "ModelConfig",
     "LossConfig",
+    "ModelConfig",
     "PathsConfig",
     "TrainConfig",
     "load_experiment_config",
