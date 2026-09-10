@@ -17,6 +17,7 @@ from src.eval.protocol import EvaluationProtocol
 from src.eval.splits import make_stratified_val_folds, train_val_fold_split
 from src.forensic.dct.constants import CHANNELS as FMAP_CHANNELS
 from src.losses import LossMeter, LossResult, build_loss
+from src.notify import Notifier, build_notifier
 from src.progress import ConsoleProgress
 from src.training.base import set_random_seed
 from src.training.builders import (
@@ -52,9 +53,11 @@ class TrainingState:
 
 
 class ExperimentRunner:
-    def __init__(self, config: ExperimentConfig, *, arm: str = "baseline") -> None:
+    def __init__(self, config: ExperimentConfig, *, arm: str = "baseline",
+                 notifier: Notifier | None = None) -> None:
         self.config = config
         self.arm = arm
+        self.notifier = build_notifier() if notifier is None else notifier
         self.device = torch.device(config.train.device)
         self.amp = build_amp(config.train, self.device)
         self.data_workspace = DataWorkspace(config.paths.data_path)
@@ -110,13 +113,15 @@ class ExperimentRunner:
             scaler=scaler,
         )
 
+        started_run = time.time()
         try:
             for epoch in range(state.start_epoch, cfg.train.epochs):
                 train_ds.set_epoch(epoch)
                 train_ds.augmentations.set_epoch(epoch)
                 train_loader.sampler.generator = torch.Generator().manual_seed(cfg.seed + epoch)
                 started = time.time()
-                run.info(f"Полные кадры: p={train_ds.augmentations.full_frame_probability:.2f}; "
+                full_frame_p = train_ds.augmentations.full_frame_probability
+                run.info(f"Полные кадры: p={full_frame_p:.2f}; "
                          f"валидация: {cfg.eval.resolution}")
                 run.info(f"Эпоха {epoch + 1}/{cfg.train.epochs}: обучение")
                 train_result = train_one_epoch(
@@ -147,6 +152,8 @@ class ExperimentRunner:
                     steps_per_epoch=steps_per_epoch,
                     optimizer=optimizer,
                     validation=validation,
+                    best_aic=state.best_aic,
+                    full_frame_p=full_frame_p,
                 )
 
                 if tuned.aic > state.best_aic:
@@ -192,7 +199,14 @@ class ExperimentRunner:
             run.info("Сохранение итоговой сводки")
             self._save_final_summary(run, state, gflops)
             run.info(f"Эксперимент завершён: лучший AIC={state.best_aic:.4f}; результаты в {run.dir.resolve()}")
+            self.notifier.finished(cfg.paths.run_name, run.summary,
+                                   elapsed=time.time() - started_run)
             return run
+        except BaseException as error:
+            # Молчаливо упавший ночной прогон — это потерянные часы GPU,
+            # поэтому о падении сообщается так же, как об окончании.
+            self.notifier.failed(cfg.paths.run_name, error)
+            raise
         finally:
             run.close()
             del model, ema, optimizer, val_loader, train_loader, scaler
@@ -326,6 +340,8 @@ class ExperimentRunner:
         steps_per_epoch: int,
         optimizer,
         validation=None,
+        best_aic: float = -1.0,
+        full_frame_p: float | None = None,
     ) -> None:
         extra = {f"train/loss_{key}": value for key, value in train_result.loss_components.items() if key != "total"}
         if validation is not None:
@@ -337,30 +353,32 @@ class ExperimentRunner:
                 extra.update({"val/aic_fixed": validation.fixed.aic,
                               "val/dice_fixed": validation.fixed.dice_pos,
                               "val/fpr_fixed": validation.fixed.fpr_neg})
-        run.log(
-            epoch,
-            {
-                **extra,
-                "samples": seen_total,
-                "train/loss": train_result.loss,
-                "train/negative_fraction": train_result.negative_fraction,
-                "train/lr": optimizer.param_groups[0]["lr"],
-                "train/skipped_steps": train_result.skipped_steps,
-                "train/fmap_gamma": model.forensic_gate_stats()["max_abs"],
-                "val/aic_tuned": tuned.aic,
-                "val/dice_tuned": tuned.dice_pos,
-                "val/fpr_tuned": tuned.fpr_neg,
-                "val/best_thr": tuned.mask_threshold,
-                "val/best_cls_thr": tuned.cls_threshold,
-                "epoch_time_s": round(time.time() - started, 1),
-                "gpu_gb": (
-                    round(torch.cuda.max_memory_allocated() / 1e9, 2)
-                    if self.device.type == "cuda"
-                    else 0.0
-                ),
-            },
-        )
+        if full_frame_p is not None:
+            extra["train/full_frame_p"] = full_frame_p
+        metrics = {
+            **extra,
+            "samples": seen_total,
+            "train/loss": train_result.loss,
+            "train/negative_fraction": train_result.negative_fraction,
+            "train/lr": optimizer.param_groups[0]["lr"],
+            "train/skipped_steps": train_result.skipped_steps,
+            "train/fmap_gamma": model.forensic_gate_stats()["max_abs"],
+            "val/aic_tuned": tuned.aic,
+            "val/dice_tuned": tuned.dice_pos,
+            "val/fpr_tuned": tuned.fpr_neg,
+            "val/best_thr": tuned.mask_threshold,
+            "val/best_cls_thr": tuned.cls_threshold,
+            "epoch_time_s": round(time.time() - started, 1),
+            "gpu_gb": (
+                round(torch.cuda.max_memory_allocated() / 1e9, 2)
+                if self.device.type == "cuda"
+                else 0.0
+            ),
+        }
+        run.log(epoch, metrics)
         run.info(f"эпоха {epoch}: {tuned} | пропущено шагов {train_result.skipped_steps}")
+        self.notifier.epoch(self.config.paths.run_name, epoch + 1, self.config.train.epochs,
+                            metrics, best_aic=best_aic)
         if train_result.skipped_steps > steps_per_epoch * 0.05:
             run.info("  ВНИМАНИЕ: пропущено >5% шагов - переполнения fp16, ставь amp='bf16'")
 

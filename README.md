@@ -150,6 +150,15 @@ The model still processes a dense 1024×1024 tensor, so padding does not save FL
 The counted forward includes the masked classification path; preprocessing,
 restoration, and validation histograms remain outside that count.
 
+## Training notifications
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` (gitignored) and every
+epoch sends its loss terms, `AIC`/`dice_pos`/`fpr_neg`, the tuned thresholds, lr
+and the frame phase to Telegram; the end of a run and any crash send one too.
+Both variables must be set or `src/notify.py` returns a null sink and training
+runs silently — a messenger being down never fails a run, and the token is
+scrubbed from error output so it cannot land in a run log.
+
 ## Loss ablation
 
 `notebooks/loss_ablation.ipynb` runs `configs/loss_l*.yaml` as one series and
