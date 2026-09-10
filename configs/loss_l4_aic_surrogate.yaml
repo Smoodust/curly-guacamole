@@ -1,9 +1,9 @@
 # Ablation arm L4: Dice over positive frames only; negatives get a soft FPR at 1%.
 # Dice on a negative frame is already near-maximum penalty for any blob at all,
 # while AIC charges a negative frame nothing until its mask reaches 1% of the frame.
-extends: baseline_mixed_original.yaml
+extends: baseline_protocol_originals.yaml
 paths:
-  run_name: pvt_v2_b2_loss_l4_aic_surrogate
+  run_name: pvt_v2_b2_protocol_loss_l4_aic_surrogate
 train:
   epoch_size: 12000
 loss:

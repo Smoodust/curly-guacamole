@@ -1,9 +1,9 @@
 # Ablation arm L1: BCE with per-image positive-pixel weighting.
 # A mask worth 0.5% of a frame gives 0.5% of the BCE terms and its gradient is
 # lost in the background; this arm restores that share, capped at 20x.
-extends: baseline_mixed_original.yaml
+extends: baseline_protocol_originals.yaml
 paths:
-  run_name: pvt_v2_b2_loss_l1_pos_weight
+  run_name: pvt_v2_b2_protocol_loss_l1_pos_weight
 train:
   epoch_size: 12000
 loss:

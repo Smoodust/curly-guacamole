@@ -28,7 +28,7 @@ def test_every_arm_differs_from_the_control_only_by_its_loss():
 def test_arms_keep_the_baseline_protocol_on_a_halved_budget():
     from src.config import load_experiment_config
 
-    baseline = load_experiment_config("configs/baseline_mixed_original.yaml")
+    baseline = load_experiment_config("configs/baseline_protocol_originals.yaml")
     for config in LossAblation(ARM_CONFIGS).configs:
         assert config.model == baseline.model
         assert config.augmentation == baseline.augmentation
@@ -46,6 +46,30 @@ def test_arms_write_to_separate_run_directories():
     assert len(set(names)) == len(names)
     assert ablation.arm_names == ["l0_baseline", "l1_pos_weight", "l2_focal",
                                   "l3_focal_tversky", "l4_aic_surrogate", "l5_aic_harmonic"]
+
+
+def test_arms_train_on_crops_first_and_only_on_full_frames_at_the_end():
+    """The arms inherit the protocol schedule, not just its data split.
+
+    An arm that quietly lost the final full-frame phase would be tuned on a crop
+    distribution and then evaluated on whole originals.
+    """
+    from src.data.augmentation.pipeline import AugmentationPipeline
+
+    for config in LossAblation(ARM_CONFIGS).configs:
+        assert config.dataset.protocol_path is not None
+        assert config.dataset.train_originals
+        final = config.augmentation.final_full_frame_epochs
+        assert 0 < final < config.train.epochs
+
+        pipeline = AugmentationPipeline(config.augmentation, total_epochs=config.train.epochs)
+        probabilities = []
+        for epoch in range(config.train.epochs):
+            pipeline.set_epoch(epoch)
+            probabilities.append(pipeline.full_frame_probability)
+
+        assert all(p < 1.0 for p in probabilities[:-final]), "crops must reach the model first"
+        assert all(p == 1.0 for p in probabilities[-final:]), "the run must end on whole frames only"
 
 
 def test_colliding_run_names_fail_before_anything_is_overwritten():

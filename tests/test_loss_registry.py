@@ -189,14 +189,20 @@ def test_unknown_loss_key_fails_early():
 
 
 def test_resume_rejects_a_different_loss(tmp_path):
+    from src.eval.protocol import EvaluationProtocol
     from src.training.engine import ExperimentRunner
     from src.training.runs import Run
 
     config = load_experiment_config("configs/loss_l4_aic_surrogate.yaml")
     config = replace(config, paths=replace(config.paths, runs_path=tmp_path),
                      train=replace(config.train, device="cpu", resume=True))
+    # The arms run under the independent protocol, so the snapshot a resume is
+    # checked against carries its provenance, exactly as ExperimentRunner.run writes it.
+    snapshot = config.to_flat_dict()
+    protocol = EvaluationProtocol.load(config.dataset.protocol_path)
+    snapshot.update(protocol.provenance(train_originals=config.dataset.train_originals))
     run = Run.create(tmp_path, config.paths.run_name, resume=False)
-    run.save_snapshot(config.to_flat_dict())
+    run.save_snapshot(snapshot)
     run.save_state({"model": {}}, "last.pt")
     run.close()
 

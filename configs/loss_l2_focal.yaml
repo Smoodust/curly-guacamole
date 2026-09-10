@@ -1,7 +1,7 @@
 # Ablation arm L2: focal reweighting of BCE (gamma=2), scale preserved against Dice.
-extends: baseline_mixed_original.yaml
+extends: baseline_protocol_originals.yaml
 paths:
-  run_name: pvt_v2_b2_loss_l2_focal
+  run_name: pvt_v2_b2_protocol_loss_l2_focal
 train:
   epoch_size: 12000
 loss:

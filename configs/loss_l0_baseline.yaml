@@ -1,9 +1,9 @@
-# Ablation arm L0: control — the same objective as baseline_mixed_original.
+# Ablation arm L0: control — the same objective as baseline_protocol_originals.
 # Runs at half budget alongside the other arms, so it isn't compared against a
 # baseline with a different number of presentations.
-extends: baseline_mixed_original.yaml
+extends: baseline_protocol_originals.yaml
 paths:
-  run_name: pvt_v2_b2_loss_l0_baseline
+  run_name: pvt_v2_b2_protocol_loss_l0_baseline
 train:
   epoch_size: 12000
 loss:

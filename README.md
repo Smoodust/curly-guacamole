@@ -153,10 +153,13 @@ restoration, and validation histograms remain outside that count.
 ## Loss ablation
 
 `notebooks/loss_ablation.ipynb` runs `configs/loss_l*.yaml` as one series and
-tabulates the arms. Without Jupyter, the same series runs from the shell:
+tabulates the arms. It starts with L4 and the control alone: L4 is the arm that
+tests the main hypothesis, and if it buys nothing the other four are not worth
+the GPU hours. Set `ARMS = ALL_ARMS` for the whole series. Without Jupyter, the
+same series runs from the shell:
 
 ```bash
-python -m src.training configs/loss_l*.yaml --data-path /workspace/data --csv runs/loss_ablation.csv
+python -m src.training configs/loss_l4_aic_surrogate.yaml configs/loss_l0_baseline.yaml --csv runs/loss_ablation.csv
 ```
 
 The objective is now selected from the config through a registry in
@@ -184,9 +187,16 @@ replaces the sum with the metric's harmonic mean.
 | L4 | `aic_surrogate` | Dice over positives only; negatives get a soft FPR at 1% |
 | L5 | `aic_harmonic` | one minus the batch AIC, from soft Dice and soft FPR |
 
-Every arm shares the encoder, fold, seed, augmentation schedule and
-original-resolution validation of `baseline_mixed_original`; only the `loss`
-section, the run name and `epoch_size` differ. The budget is halved to
+Every arm shares the encoder, seed, augmentation schedule and
+original-resolution validation of `baseline_protocol_originals`; only the `loss`
+section, the run name and `epoch_size` differ. That base means the arms train
+against the independent protocol split (`dataset.protocol_path`) with originals
+in the training rows, so an arm's development score sits on the same footing as
+the other protocol runs. Training runs in two phases: crops for the first six
+epochs (foreground-biased, `full_frame_probability: 0.5`), then whole frames
+only for the last two (`final_full_frame_epochs: 2`), which closes the gap
+against original-resolution validation. `tests/test_ablation.py` pins that
+schedule; the notebook prints it per epoch before launching. The budget is halved to
 `epoch_size: 12000`, so **these scores are not comparable with the completed
 full-budget runs** — L0 is the control for exactly that reason. Promote the
 winning objective into a full-budget config under a new run name before reading
@@ -198,6 +208,13 @@ negative frame, so its estimate is the noisiest of the six; a larger physical
 batch would suit it better, but changing it here would confound the comparison.
 The saved snapshot records `loss_name`, and resuming a run with a different
 objective is rejected rather than silently continuing a different curve.
+
+Every epoch writes `runs/<run_name>/ckpt/last.pt`, so an interrupted arm resumes
+from the next epoch when it is launched again; `train.resume` is already true in
+the base config, and the notebook exposes it as `RESUME` next to a table of what
+each arm has on disk. Completed arms are read from their `summary.json` instead
+of being retrained, which makes both the notebook cell and the shell command
+safe to re-run.
 
 ## Submission
 
