@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 
 import numpy as np
 
@@ -27,10 +27,22 @@ class AugmentationConfig:
             raise ValueError("augmentation.final_full_frame_epochs must be non-negative")
 
 
-class AugmentationStage(StrEnum):
+class AugmentationStage(str, Enum):
+    """Стадия конвейера. `str`-миксин, а не `enum.StrEnum`: тот появился в 3.11,
+    а проект должен собираться и на 3.10.
+
+    `__str__`/`__format__` взяты у `str` ровно затем, зачем их берёт сам
+    `StrEnum`: без них `f"{stage}"` даёт `AugmentationStage.FINAL` вместо
+    `final`, причём по-разному в 3.10, 3.11 и 3.12. Стадия попадает в тексты
+    ошибок, поэтому подстановка должна быть одинаковой везде.
+    """
+
     BEFORE_FORENSICS = "before_forensics"
     AFTER_FORENSICS = "after_forensics"
     FINAL = "final"
+
+    __str__ = str.__str__
+    __format__ = str.__format__
 
 
 class AIIJCAugmentation(ABC):
