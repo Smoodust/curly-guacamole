@@ -225,6 +225,8 @@ class EvalConfig(ConfigSection):
 
 @dataclass(frozen=True)
 class LossConfig(ConfigSection):
+    # Defaults keep bce_dice, so the objective of every historical run is unchanged.
+    objective: str = 'bce_dice'
     dice_scope: str = 'all'
     dice_weight: float = 1.0
     pixel_loss: str = 'bce'
@@ -233,19 +235,47 @@ class LossConfig(ConfigSection):
     dice_area_max_weight: float = 3.0
     boundary_weight: float = 0.0
     aux_loss_weight: float | None = None
+    # AIC-shaped arms: a soft false positive rate replaces the Dice penalty the
+    # metric does not charge below area_threshold. See src/losses/aic.py.
+    bce_weight: float = 1.0
+    fpr_weight: float = 1.0
+    aic_weight: float = 1.0
+    area_threshold: float = 0.01
+    area_mode: str = 'sigmoid'
+    area_softness: float = 0.5
 
     def __post_init__(self):
+        from src.losses.factory import OBJECTIVE_FIELDS, SHARED_FIELDS
+        from src.losses.functional import SOFT_FALSE_POSITIVE_MODES
+        if self.objective not in OBJECTIVE_FIELDS:
+            raise ValueError(f"loss.objective must be one of {', '.join(sorted(OBJECTIVE_FIELDS))}")
         if self.dice_scope not in {'all', 'positive'}:
             raise ValueError("loss.dice_scope must be 'all' or 'positive'")
         _nonnegative(self.dice_weight, 'loss.dice_weight')
         if self.pixel_loss not in {'bce', 'focal'}:
             raise ValueError("loss.pixel_loss must be 'bce' or 'focal'")
-        for name in ('focal_gamma', 'boundary_weight', 'dice_area_reference', 'dice_area_max_weight'):
+        for name in ('focal_gamma', 'boundary_weight', 'dice_area_reference', 'dice_area_max_weight',
+                     'bce_weight', 'fpr_weight', 'aic_weight'):
             _nonnegative(getattr(self, name), f'loss.{name}')
         if self.dice_area_reference > 1 or self.dice_area_max_weight < 1:
             raise ValueError('loss area reference must be <= 1 and maximum weight >= 1')
         if self.aux_loss_weight is not None:
             _nonnegative(self.aux_loss_weight, 'loss.aux_loss_weight')
+        if self.area_mode not in SOFT_FALSE_POSITIVE_MODES:
+            raise ValueError(f"loss.area_mode must be one of {', '.join(SOFT_FALSE_POSITIVE_MODES)}")
+        if not 0 < self.area_threshold < 1:
+            raise ValueError('loss.area_threshold must be in (0, 1)')
+        if self.area_softness <= 0:
+            raise ValueError('loss.area_softness must be positive')
+        # A field the objective never reads is a silent no-op that costs a whole run.
+        used = OBJECTIVE_FIELDS[self.objective] | SHARED_FIELDS | {'objective'}
+        ignored = sorted(
+            item.name for item in fields(self)
+            if item.name not in used and getattr(self, item.name) != item.default
+        )
+        if ignored:
+            raise ValueError(
+                f"loss.objective {self.objective!r} ignores: {', '.join(ignored)}")
 
 
 @dataclass(frozen=True)

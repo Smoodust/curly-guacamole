@@ -54,6 +54,10 @@ eval:
   min_areas: [0.0]
 
 loss:
+  # bce_dice reads dice_scope/dice_weight/pixel_loss/boundary_weight; the
+  # aic_surrogate and aic_harmonic arms read the area fields instead. A field
+  # the chosen objective ignores is rejected, not silently dropped.
+  objective: bce_dice
   dice_scope: all
   dice_weight: 1.0
 

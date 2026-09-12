@@ -1,0 +1,16 @@
+extends: jpeg576_pretrained_18ep_full_train_finetune_3ep.yaml
+paths:
+  run_name: jpeg576_pretrained_18ep_full_train_finetune_3ep_aic_harmonic
+# Inherits parent last.pt initialization, fresh optimizer/EMA, three complete
+# training passes, full-frame augmentation and the existing fine-tune LRs.
+loss:
+  objective: aic_harmonic
+  # One minus the batch AIC, built from soft Dice and a soft FPR. The harmonic
+  # mean moves gradient to whichever half of the metric is currently worse.
+  aic_weight: 1.0
+  area_threshold: 0.01
+  # Rational keeps gradient at every area; sigmoid saturates far above the
+  # threshold, which matters here because the term is the whole objective.
+  area_mode: rational
+  # Retain aux modules for strict checkpoint loading, but no auxiliary loss.
+  aux_loss_weight: 0.0

@@ -1,0 +1,17 @@
+extends: jpeg576_pretrained_18ep_full_train_finetune_3ep.yaml
+paths:
+  run_name: jpeg576_pretrained_18ep_full_train_finetune_3ep_aic_surrogate
+# Inherits parent last.pt initialization, fresh optimizer/EMA, three complete
+# training passes, full-frame augmentation and the existing fine-tune LRs.
+loss:
+  objective: aic_surrogate
+  # Dice is charged on positive frames only. A negative frame instead pays a
+  # soft false positive rate at the metric's own 1% threshold, where plain Dice
+  # already takes near-maximum penalty for a single stray blob. Pixel BCE stays
+  # on every frame and holds the negatives while area is still far from 1%.
+  dice_weight: 1.0
+  fpr_weight: 1.0
+  area_threshold: 0.01
+  area_mode: sigmoid
+  # Retain aux modules for strict checkpoint loading, but no auxiliary loss.
+  aux_loss_weight: 0.0

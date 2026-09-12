@@ -14,7 +14,7 @@ from src.data.data_workspace import DataWorkspace
 from src.eval.diagnostics import EvaluationReport
 from src.eval.protocol import EvaluationProtocol
 from src.forensic.dct.constants import CHANNELS as FMAP_CHANNELS
-from src.losses import LossMeter, SegmentationLoss
+from src.losses import LossMeter, build_criterion
 from src.progress import ConsoleProgress
 from src.training.base import set_random_seed
 from src.training.builders import (
@@ -454,8 +454,8 @@ def train_one_epoch(
     model.train()
     skipped_steps = 0
     meter = LossMeter()
-    criterion = SegmentationLoss(**config.loss.to_dict(), aux_weight=config.model.aux_weight,
-                                 dct_aux_weight=config.model.dct_aux_weight)
+    criterion = build_criterion(config, aux_weight=config.model.aux_weight,
+                                dct_aux_weight=config.model.dct_aux_weight)
     seen = 0
     accumulation_samples = 0
     negatives = torch.zeros((), device=device)

@@ -8,7 +8,7 @@ import torch
 from src.training.transfer import BatchTransfer
 
 from src.data.letterbox import Letterbox
-from src.losses import LossMeter, SegmentationLoss
+from src.losses import LossMeter, build_criterion
 from src.progress import ConsoleProgress
 from src.training.metric import AICAccumulator, AICResult
 
@@ -47,7 +47,7 @@ def validate(
     acc = AICAccumulator(n_bins=n_bins, small_mask_weight=config.eval.small_mask_weight)
     histograms = DeviceHistogramAccumulator(acc, device)
     meter = LossMeter()
-    criterion = SegmentationLoss(**config.loss.to_dict())
+    criterion = build_criterion(config)
 
     for batch in ConsoleProgress.iterate(loader, "Валидация, батчи"):
         images = batch["image"].to(device, non_blocking=True, memory_format=torch.channels_last)
