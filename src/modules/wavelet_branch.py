@@ -1,4 +1,4 @@
-"""Native Haar detail extraction on the model device and late EMCAD fusion."""
+"""Native Haar detail extraction on the model device and residual fusion."""
 
 from contextlib import nullcontext
 
@@ -68,8 +68,41 @@ class WaveletBranch(nn.Module):
         self.aux_head = nn.Conv2d(24, 1, 1) if use_aux else None
 
     def forward(self, native_rgb, global_features):
+        detail, aux = self.extract(native_rgb)
+        return self.fuse(detail, global_features), aux
+
+    def extract(self, native_rgb):
+        """Compute shared details and at most one auxiliary prediction."""
         detail = self.stem(self.preprocess(native_rgb))
         aux = self.aux_head(detail) if self.training and self.aux_head is not None else None
+        return detail, aux
+
+    def fuse(self, detail, global_features):
         detail = F.interpolate(detail, global_features.shape[-2:], mode='bilinear', align_corners=False)
         residual = self.fusion(torch.cat((self.context(global_features), detail), dim=1))
-        return global_features + self.gamma * residual, aux
+        return global_features + self.gamma * residual
+
+
+class WaveletFusion(nn.Module):
+    """Independent context projection and gate for one encoder level."""
+
+    def __init__(self, channels):
+        super().__init__()
+        self.context = nn.Conv2d(channels, 16, 1)
+        self.fusion = nn.Sequential(nn.Conv2d(40, 40, 3, padding=1, groups=40), nn.GELU(),
+                                    nn.Conv2d(40, channels, 1))
+        self.gamma = nn.Parameter(torch.zeros(()))
+
+    def forward(self, detail, features):
+        detail = F.interpolate(detail, features.shape[-2:], mode='bilinear', align_corners=False)
+        residual = self.fusion(torch.cat((self.context(features), detail), dim=1))
+        return features + self.gamma * residual
+
+
+class MultiScaleWaveletBranch(WaveletBranch):
+    """Share Haar/CNN/aux across encoder fusion and the inherited late fusion."""
+
+    def __init__(self, global_channels, early_channels, size, use_aux):
+        super().__init__(global_channels, size, use_aux)
+        self.early_fusions = nn.ModuleDict({name: WaveletFusion(channels)
+                                            for name, channels in early_channels.items()})

@@ -83,8 +83,8 @@ class ModelConfig(ConfigSection):
 
     def __post_init__(self):
         _non_empty_str(self.encoder_name, 'model.encoder_name')
-        if self.wavelet_fusion not in {'late', 'stride4', 'stride8'}:
-            raise ValueError('wavelet_fusion must be late, stride4 or stride8')
+        if self.wavelet_fusion not in {'late', 'stride4', 'stride8', 'stride4_stride8_late'}:
+            raise ValueError('wavelet_fusion must be late, stride4, stride8 or stride4_stride8_late')
         if self.wavelet_fusion != 'late' and not self.wavelet_image_size:
             raise ValueError('early wavelet_fusion requires wavelet_image_size')
         if type(self.forensic_contrastive_dim) is not int or self.forensic_contrastive_dim < 0:

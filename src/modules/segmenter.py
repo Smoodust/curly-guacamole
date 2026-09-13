@@ -10,7 +10,7 @@ from src.modules.local_branch import LocalBranch
 from src.modules.luma_branch import LumaBranch
 from src.modules.strided_resize import StridedResize
 from src.modules.utils import build_timm_encoder
-from src.modules.wavelet_branch import WaveletBranch
+from src.modules.wavelet_branch import MultiScaleWaveletBranch, WaveletBranch
 
 
 class Segmenter(nn.Module):
@@ -52,8 +52,8 @@ class Segmenter(nn.Module):
                     ('rgb_refinement_channels', 'output_refinement_channels'))):
             raise ValueError('wavelet_image_size requires EMCAD without other detail/resize branches')
         self.wavelet_image_size = wavelet_image_size
-        if wavelet_fusion not in {'late', 'stride4', 'stride8'}:
-            raise ValueError('wavelet_fusion must be late, stride4 or stride8')
+        if wavelet_fusion not in {'late', 'stride4', 'stride8', 'stride4_stride8_late'}:
+            raise ValueError('wavelet_fusion must be late, stride4, stride8 or stride4_stride8_late')
         if wavelet_fusion != 'late' and not wavelet_image_size:
             raise ValueError('early wavelet_fusion requires wavelet_image_size')
         self.wavelet_fusion = wavelet_fusion
@@ -111,7 +111,16 @@ class Segmenter(nn.Module):
         self.wavelet_feature_index = self.strides.index(wavelet_stride) if wavelet_stride is not None else None
         wavelet_channels = (self.channels[self.wavelet_feature_index] if wavelet_stride is not None
                             else self.decoder.out_channels)
-        self.wavelet_branch = WaveletBranch(wavelet_channels, wavelet_image_size, aux_weight > 0) if wavelet_image_size else None
+        self.wavelet_feature_indices = {}
+        if wavelet_fusion == 'stride4_stride8_late':
+            if any(stride not in self.strides for stride in (4, 8)):
+                raise ValueError('wavelet_fusion=stride4_stride8_late requires encoder strides 4 and 8')
+            self.wavelet_feature_indices = {f'stride{stride}': self.strides.index(stride) for stride in (4, 8)}
+            early_channels = {name: self.channels[index] for name, index in self.wavelet_feature_indices.items()}
+            self.wavelet_branch = MultiScaleWaveletBranch(
+                self.decoder.out_channels, early_channels, wavelet_image_size, aux_weight > 0)
+        else:
+            self.wavelet_branch = WaveletBranch(wavelet_channels, wavelet_image_size, aux_weight > 0) if wavelet_image_size else None
 
         head_kernel = self.decoder.head_kernel_size
         self.segmentation_head = nn.Conv2d(
@@ -178,7 +187,12 @@ class Segmenter(nn.Module):
                 encoder_features = self.forensic_fusion(encoder_features, forensic_map, jpeg=jpeg)
 
         wavelet_aux = None
-        if self.wavelet_branch is not None and self.wavelet_feature_index is not None:
+        wavelet_detail = None
+        if self.wavelet_feature_indices:
+            wavelet_detail, wavelet_aux = self.wavelet_branch.extract(native_rgb)
+            for name, index in self.wavelet_feature_indices.items():
+                encoder_features[index] = self.wavelet_branch.early_fusions[name](wavelet_detail, encoder_features[index])
+        elif self.wavelet_branch is not None and self.wavelet_feature_index is not None:
             index = self.wavelet_feature_index
             encoder_features[index], wavelet_aux = self.wavelet_branch(native_rgb, encoder_features[index])
 
@@ -193,6 +207,8 @@ class Segmenter(nn.Module):
             decoder_features, aux_logits = self.luma_branch(native_rgb, decoder_features)
         if self.wavelet_branch is not None and self.wavelet_fusion == 'late':
             decoder_features, aux_logits = self.wavelet_branch(native_rgb, decoder_features)
+        elif wavelet_detail is not None:
+            decoder_features = self.wavelet_branch.fuse(wavelet_detail, decoder_features)
 
         logits = self.segmentation_head(
             decoder_features
