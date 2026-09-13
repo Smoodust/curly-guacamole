@@ -303,6 +303,8 @@ class ExperimentRunner:
                 if section == 'model' and key == 'resize_variant':
                     default = 'linear'
                 previous = saved_values.get(key, default)
+                if section == 'model' and key == 'wavelet_fusion':
+                    previous = saved_values.get(key, 'late')
                 if isinstance(value, tuple) and isinstance(previous, list):
                     previous = tuple(previous)
                 if previous != value:

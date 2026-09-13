@@ -77,6 +77,7 @@ def build_model(config: ModelConfig, *, pretrained: bool = True) -> Segmenter:
         local_image_size=config.local_image_size,
         luma_image_size=config.luma_image_size,
         wavelet_image_size=config.wavelet_image_size,
+        wavelet_fusion=config.wavelet_fusion,
         strided_resize=config.strided_resize,
         resize_variant=config.resize_variant,
     )

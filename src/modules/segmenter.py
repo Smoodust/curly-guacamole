@@ -36,6 +36,7 @@ class Segmenter(nn.Module):
         local_image_size=0,
         luma_image_size=0,
         wavelet_image_size=0,
+        wavelet_fusion='late',
         strided_resize=False,
         resize_variant='linear',
     ):
@@ -51,6 +52,11 @@ class Segmenter(nn.Module):
                     ('rgb_refinement_channels', 'output_refinement_channels'))):
             raise ValueError('wavelet_image_size requires EMCAD without other detail/resize branches')
         self.wavelet_image_size = wavelet_image_size
+        if wavelet_fusion not in {'late', 'stride8'}:
+            raise ValueError('wavelet_fusion must be late or stride8')
+        if wavelet_fusion != 'late' and not wavelet_image_size:
+            raise ValueError('wavelet_fusion=stride8 requires wavelet_image_size')
+        self.wavelet_fusion = wavelet_fusion
         if strided_resize and (use_forensics or local_image_size or luma_image_size):
             raise ValueError('strided_resize requires RGB-only without local/luma branches')
         self.strided_resize = strided_resize
@@ -99,7 +105,12 @@ class Segmenter(nn.Module):
         )
         self.local_branch = LocalBranch(self.decoder.out_channels, aux_weight > 0) if local_image_size else None
         self.luma_branch = LumaBranch(self.decoder.out_channels, luma_image_size, aux_weight > 0) if luma_image_size else None
-        self.wavelet_branch = WaveletBranch(self.decoder.out_channels, wavelet_image_size, aux_weight > 0) if wavelet_image_size else None
+        if wavelet_fusion == 'stride8' and 8 not in self.strides:
+            raise ValueError('wavelet_fusion=stride8 requires an encoder stride 8')
+        self.wavelet_feature_index = self.strides.index(8) if wavelet_fusion == 'stride8' else None
+        wavelet_channels = (self.channels[self.wavelet_feature_index] if wavelet_fusion == 'stride8'
+                            else self.decoder.out_channels)
+        self.wavelet_branch = WaveletBranch(wavelet_channels, wavelet_image_size, aux_weight > 0) if wavelet_image_size else None
 
         head_kernel = self.decoder.head_kernel_size
         self.segmentation_head = nn.Conv2d(
@@ -165,14 +176,21 @@ class Segmenter(nn.Module):
             else:
                 encoder_features = self.forensic_fusion(encoder_features, forensic_map, jpeg=jpeg)
 
+        wavelet_aux = None
+        if self.wavelet_branch is not None and self.wavelet_fusion == 'stride8':
+            index = self.wavelet_feature_index
+            encoder_features[index], wavelet_aux = self.wavelet_branch(native_rgb, encoder_features[index])
+
         decoder_features, aux_logits = self.decoder(
             encoder_features
         )
+        if wavelet_aux is not None:
+            aux_logits = wavelet_aux
         if self.local_branch is not None:
             decoder_features, aux_logits = self.local_branch(local_input, decoder_features)
         if self.luma_branch is not None:
             decoder_features, aux_logits = self.luma_branch(native_rgb, decoder_features)
-        if self.wavelet_branch is not None:
+        if self.wavelet_branch is not None and self.wavelet_fusion == 'late':
             decoder_features, aux_logits = self.wavelet_branch(native_rgb, decoder_features)
 
         logits = self.segmentation_head(
