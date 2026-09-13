@@ -1,4 +1,4 @@
-extends: jpeg576_pretrained.yaml
+extends: jpeg576_fusion_local_weighted_val.yaml
 paths:
   run_name: jpeg576_wavelet
 model:
