@@ -1,0 +1,6 @@
+extends: jpeg576_fusion_baseline_weighted_val.yaml
+paths:
+  run_name: jpeg576_fusion_baseline_gn_aux_weighted_val
+model:
+  norm: group
+  aux_weight: 0.4
