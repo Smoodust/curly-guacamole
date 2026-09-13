@@ -75,11 +75,18 @@ class ModelConfig(ConfigSection):
     decoder_kwargs: dict[str, Any] = field(default_factory=dict)
     local_image_size: int = 0
     luma_image_size: int = 0
+    wavelet_image_size: int = 0
     strided_resize: bool = False
     resize_variant: str = 'linear'
 
     def __post_init__(self):
         _non_empty_str(self.encoder_name, 'model.encoder_name')
+        if type(self.wavelet_image_size) is not int or self.wavelet_image_size < 0 or self.wavelet_image_size % 32:
+            raise ValueError('model.wavelet_image_size must be 0 or a positive multiple of 32')
+        if self.wavelet_image_size and (self.local_image_size or self.luma_image_size or self.strided_resize
+                or any(self.decoder_kwargs.get(k, 0) for k in
+                       ('rgb_refinement_channels', 'output_refinement_channels'))):
+            raise ValueError('wavelet_image_size requires EMCAD without other detail/resize branches')
         if type(self.strided_resize) is not bool:
             raise ValueError('model.strided_resize must be boolean')
         if self.resize_variant not in {'linear', 'nonlinear', 'residual_paper', 'residual_compact'}:
@@ -293,6 +300,8 @@ class ExperimentConfig:
             raise ValueError('forensic_mode=jpeg requires stretch geometry')
         if self.model.luma_image_size and self.dataset.resize_mode != 'stretch':
             raise ValueError('luma_image_size currently requires stretch geometry')
+        if self.model.wavelet_image_size and self.dataset.resize_mode != 'stretch':
+            raise ValueError('wavelet_image_size currently requires stretch geometry')
         if self.model.strided_resize and self.dataset.resize_mode != 'stretch':
             raise ValueError('strided_resize requires stretch geometry')
 

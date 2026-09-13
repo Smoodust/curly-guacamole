@@ -1,0 +1,5 @@
+extends: jpeg576_pretrained.yaml
+paths:
+  run_name: jpeg576_wavelet
+model:
+  wavelet_image_size: 1024

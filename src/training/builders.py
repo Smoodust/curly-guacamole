@@ -75,6 +75,7 @@ def build_model(config: ModelConfig, *, pretrained: bool = True) -> Segmenter:
         decoder_kwargs=config.decoder_kwargs,
         local_image_size=config.local_image_size,
         luma_image_size=config.luma_image_size,
+        wavelet_image_size=config.wavelet_image_size,
         strided_resize=config.strided_resize,
         resize_variant=config.resize_variant,
     )
@@ -125,6 +126,7 @@ def build_datasets(
         resize_mode=config.dataset.resize_mode,
         local_image_size=config.model.local_image_size,
         luma_image_size=config.model.luma_image_size,
+        wavelet_image_size=config.model.wavelet_image_size,
         strided_resize=config.model.strided_resize,
         local_dtype=local_dtype,
     )
@@ -146,6 +148,7 @@ def build_datasets(
         original_targets=True,
         local_image_size=config.model.local_image_size,
         luma_image_size=config.model.luma_image_size,
+        wavelet_image_size=config.model.wavelet_image_size,
         strided_resize=config.model.strided_resize,
         local_dtype=local_dtype,
     )
@@ -189,6 +192,7 @@ def build_loaders(
     local = (getattr(train_ds, 'local_preprocessor', None) is not None
              or bool(getattr(train_ds, 'strided_resize', False))
              or bool(getattr(train_ds, 'luma_image_size', 0))
+             or bool(getattr(train_ds, 'wavelet_image_size', 0))
              or getattr(train_ds, 'forensic_mode', 'maps') == 'jpeg')
     # Local views are 60 MiB each; avoid buffering two huge batches per worker.
     prefetch = 1 if local else 2
@@ -200,6 +204,7 @@ def build_loaders(
         batch_size=config.batch_size,
         sampler=sampler,
         collate_fn=ValidationCollator() if (getattr(train_ds, 'luma_image_size', 0)
+                                           or getattr(train_ds, 'wavelet_image_size', 0)
                                            or getattr(train_ds, 'forensic_mode', 'maps') == 'jpeg') else None,
         drop_last=not bool(config.full_train_epochs),
         num_workers=config.workers,

@@ -47,6 +47,7 @@ class AIIJCDataset(Dataset):
             jpeg_variant: str = 'baseline',
             local_image_size: int = 0,
             luma_image_size: int = 0,
+            wavelet_image_size: int = 0,
             local_dtype: torch.dtype = torch.float32,
             strided_resize: bool = False,
             boundary_targets: bool = False,
@@ -58,6 +59,11 @@ class AIIJCDataset(Dataset):
         self.boundary_target = SignedDistanceTarget() if boundary_targets else None
         self.has_targets = self.mode in {"train", "val"}
         self.use_forensics = use_forensics
+        if type(wavelet_image_size) is not int or wavelet_image_size < 0 or wavelet_image_size % 32:
+            raise ValueError('wavelet_image_size must be 0 or a positive multiple of 32')
+        if wavelet_image_size and (resize_mode != 'stretch' or local_image_size or luma_image_size or strided_resize):
+            raise ValueError('wavelet_image_size requires stretch geometry and no other detail/resize branches')
+        self.wavelet_image_size = wavelet_image_size
         if strided_resize and (use_forensics or local_image_size or luma_image_size):
             raise ValueError('strided_resize requires RGB-only without local/luma branches')
         self.strided_resize = strided_resize
@@ -151,7 +157,7 @@ class AIIJCDataset(Dataset):
             timer.mark('geometry')
         local_input = None
         native_rgb = None
-        if self.local_preprocessor is not None or self.luma_image_size:
+        if self.local_preprocessor is not None or self.luma_image_size or self.wavelet_image_size:
             # One appearance draw on native geometry shared by both views.
             sample = self._augment(AugmentationStage.FINAL, sample, rng)
             if timer:
@@ -160,6 +166,10 @@ class AIIJCDataset(Dataset):
             # Native residual extraction and resize always remain float32.
             if self.local_preprocessor is not None:
                 local_input = self.local_preprocessor(sample.image, dtype=self.local_dtype)
+            elif self.wavelet_image_size:
+                # Keep decoded HWC storage; permute is a view, not a full CHW copy.
+                # Negative-stride augmentation views are materialized only if needed.
+                native_rgb = torch.from_numpy(np.ascontiguousarray(sample.image)).permute(2, 0, 1)
             else:
                 native_rgb = torch.from_numpy(np.ascontiguousarray(sample.image.transpose(2, 0, 1)))
             if timer:

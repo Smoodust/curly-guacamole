@@ -7,7 +7,7 @@ def count_gflops(model, size: int, *, channels: int = 3, use_valid_mask: bool = 
     """GFLOPs одного eval forward по FlopCounterMode.
 
     Счётчик не учитывает все операции, в частности RGB->Y и interpolation.
-    native_size задаёт геометрию входа luma/JPEG, но не оценивает runtime/память.
+    native_size задаёт геометрию входа luma/wavelet/JPEG, но не оценивает runtime/память.
     Для JPEG размер обязателен: стоимость зависит от исходника, а не только RGB.
 
     Модель считается там, где лежит: перекладывать её здесь нельзя, иначе
@@ -40,9 +40,9 @@ def count_gflops(model, size: int, *, channels: int = 3, use_valid_mask: bool = 
                                   'geometry': (0, 0, h, w, 0, 0, 0)}]
                 if getattr(model, 'jpeg_variant', 'baseline') in {'signed', 'subblock4'}:
                     kwargs['jpeg'][0]['coefficients'] = torch.zeros_like(kwargs['jpeg'][0]['bins'], dtype=torch.int16)
-            luma_size = getattr(model, 'luma_image_size', 0)
-            if luma_size:
-                height, width = native_size or (luma_size, luma_size)
+            detail_size = getattr(model, 'luma_image_size', 0) or getattr(model, 'wavelet_image_size', 0)
+            if detail_size:
+                height, width = native_size or (detail_size, detail_size)
                 kwargs['native_rgb'] = [torch.zeros(3, height, width, dtype=torch.uint8, device=device)]
             input_size = size * 2 if getattr(model, 'strided_resize', False) else size
             model(torch.zeros(1, channels, input_size, input_size, device=device), **kwargs)

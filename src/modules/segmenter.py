@@ -10,6 +10,7 @@ from src.modules.local_branch import LocalBranch
 from src.modules.luma_branch import LumaBranch
 from src.modules.strided_resize import StridedResize
 from src.modules.utils import build_timm_encoder
+from src.modules.wavelet_branch import WaveletBranch
 
 
 class Segmenter(nn.Module):
@@ -33,10 +34,18 @@ class Segmenter(nn.Module):
         decoder_kwargs=None,
         local_image_size=0,
         luma_image_size=0,
+        wavelet_image_size=0,
         strided_resize=False,
         resize_variant='linear',
     ):
         super().__init__()
+        if type(wavelet_image_size) is not int or wavelet_image_size < 0 or wavelet_image_size % 32:
+            raise ValueError('wavelet_image_size must be 0 or a positive multiple of 32')
+        if wavelet_image_size and (local_image_size or luma_image_size or strided_resize or
+                any((decoder_kwargs or {}).get(k, 0) for k in
+                    ('rgb_refinement_channels', 'output_refinement_channels'))):
+            raise ValueError('wavelet_image_size requires EMCAD without other detail/resize branches')
+        self.wavelet_image_size = wavelet_image_size
         if strided_resize and (use_forensics or local_image_size or luma_image_size):
             raise ValueError('strided_resize requires RGB-only without local/luma branches')
         self.strided_resize = strided_resize
@@ -79,11 +88,12 @@ class Segmenter(nn.Module):
             encoder_channels=self.channels,
             encoder_strides=self.strides,
             norm=norm,
-            use_aux=aux_weight > 0 and not (local_image_size or luma_image_size),
+            use_aux=aux_weight > 0 and not (local_image_size or luma_image_size or wavelet_image_size),
             **(decoder_kwargs or {}),
         )
         self.local_branch = LocalBranch(self.decoder.out_channels, aux_weight > 0) if local_image_size else None
         self.luma_branch = LumaBranch(self.decoder.out_channels, luma_image_size, aux_weight > 0) if luma_image_size else None
+        self.wavelet_branch = WaveletBranch(self.decoder.out_channels, wavelet_image_size, aux_weight > 0) if wavelet_image_size else None
 
         head_kernel = self.decoder.head_kernel_size
         self.segmentation_head = nn.Conv2d(
@@ -116,13 +126,13 @@ class Segmenter(nn.Module):
                 raise ValueError('jpeg inputs require stretch geometry')
         elif jpeg is not None:
             raise ValueError('jpeg inputs require forensic_mode=jpeg')
-        if self.luma_branch is not None:
+        if self.luma_branch is not None or self.wavelet_branch is not None:
             if not isinstance(native_rgb, (list, tuple)) or len(native_rgb) != image.shape[0]:
                 raise ValueError('native_rgb must contain one native image per batch sample')
             if valid_mask is not None:
                 raise ValueError('native_rgb currently requires stretch geometry')
         elif native_rgb is not None:
-            raise ValueError('native_rgb supplied with luma branch disabled')
+            raise ValueError('native_rgb supplied with native detail branches disabled')
         if self.local_branch is not None:
             expected = (image.shape[0], 15, self.local_image_size, self.local_image_size)
             if local_input is None or tuple(local_input.shape) != expected:
@@ -154,6 +164,8 @@ class Segmenter(nn.Module):
             decoder_features, aux_logits = self.local_branch(local_input, decoder_features)
         if self.luma_branch is not None:
             decoder_features, aux_logits = self.luma_branch(native_rgb, decoder_features)
+        if self.wavelet_branch is not None:
+            decoder_features, aux_logits = self.wavelet_branch(native_rgb, decoder_features)
 
         logits = self.segmentation_head(
             decoder_features

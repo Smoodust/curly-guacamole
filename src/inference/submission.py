@@ -131,6 +131,7 @@ def create_submission(
                            mode="test", resize_mode=config.resize_mode,
                            local_image_size=config.model.local_image_size,
                            luma_image_size=config.model.luma_image_size,
+                           wavelet_image_size=config.model.wavelet_image_size,
                            strided_resize=config.model.strided_resize,
                            use_forensics=config.model.use_forensics,
                            forensic_mode=config.model.forensic_mode, jpeg_variant=config.model.jpeg_variant)

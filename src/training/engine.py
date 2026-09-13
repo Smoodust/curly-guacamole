@@ -282,8 +282,8 @@ class ExperimentRunner:
             values = cfg.to_dict()[section]
             saved_values = snapshot.get(section, snapshot)
             for key, value in values.items():
-                # Snapshots predating the optional luma branch mean it was disabled.
-                default = 0 if section == 'model' and key == 'luma_image_size' else None
+                # Snapshots predating optional native detail branches mean disabled.
+                default = 0 if section == 'model' and key in {'luma_image_size', 'wavelet_image_size'} else None
                 if section == 'loss':
                     default = getattr(LossConfig(), key)
                 if section == 'model' and key in {'jpeg_variant', 'fusion_variant'}:
