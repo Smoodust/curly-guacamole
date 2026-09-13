@@ -2,8 +2,9 @@
 
 Reference: Rahman et al., CVPR 2024, https://arxiv.org/abs/2405.06880.
 Implements parallel additive multi-scale convolutions and a shared spatial
-attention map predictor. Auxiliary supervision is on the final merged skip
-before refinement; the paper's multi-head training scheme is not reproduced.
+attention map predictor. Auxiliary supervision defaults to the final merged
+skip before refinement, with optional post-refinement stride 8/16 positions.
+The paper's multi-head training scheme is not reproduced.
 """
 
 import math
@@ -120,8 +121,14 @@ class EMCADDecoder(nn.Module):
     def __init__(self, encoder_channels, encoder_strides, norm='batch', use_aux=False,
                  kernel_sizes=(1, 3, 5), expansion_factor=2, lgag_kernel_size=3,
                  activation='relu', output_refinement_channels=0,
-                 rgb_refinement_channels=0, rgb_detail_channels=24):
+                 rgb_refinement_channels=0, rgb_detail_channels=24,
+                 aux_position='pre_refine_4'):
         super().__init__()
+        aux_stages = {'pre_refine_4': 3, 'post_refine_8': 2, 'post_refine_16': 1}
+        if aux_position not in aux_stages:
+            raise ValueError(f'unknown aux_position: {aux_position}')
+        self.aux_stage = aux_stages[aux_position]
+        self.aux_before_refine = aux_position == 'pre_refine_4'
         for name, value in (('output_refinement_channels', output_refinement_channels),
                             ('rgb_refinement_channels', rgb_refinement_channels),
                             ('rgb_detail_channels', rgb_detail_channels)):
@@ -160,7 +167,7 @@ class EMCADDecoder(nn.Module):
         ])
         self.out_channels = channels[-1]
         self.output_stride = 4
-        self.aux_head = nn.Conv2d(self.out_channels, 1, 1) if use_aux else None
+        self.aux_head = nn.Conv2d(channels[self.aux_stage], 1, 1) if use_aux else None
         self.output_refinement = (
             SpatialResidualRefinement(self.out_channels, output_refinement_channels, norm)
             if output_refinement_channels else nn.Identity()
@@ -186,7 +193,10 @@ class EMCADDecoder(nn.Module):
                 skip = skips[stage]
                 features = self.upsample[stage - 1](features, skip.shape[-2:])
                 features = features + self.gates[stage - 1](features, skip)
-            if stage == 3 and self.training and self.aux_head is not None:
+            supervise = stage == self.aux_stage and self.training and self.aux_head is not None
+            if supervise and self.aux_before_refine:
                 aux_logits = self.aux_head(features)
             features = refine(self.spatial_attention(attention(features)))
+            if supervise and not self.aux_before_refine:
+                aux_logits = self.aux_head(features)
         return self.output_refinement(features), aux_logits

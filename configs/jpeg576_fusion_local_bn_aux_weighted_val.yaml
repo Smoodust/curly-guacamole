@@ -1,0 +1,6 @@
+extends: jpeg576_fusion_local_weighted_val.yaml
+paths:
+  run_name: jpeg576_fusion_local_bn_aux_weighted_val
+model:
+  norm: batch
+  aux_weight: 0.4
