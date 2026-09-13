@@ -1,0 +1,5 @@
+extends: jpeg576_fusion_local_weighted_val_wavelet_stride8.yaml
+paths:
+  run_name: jpeg576_fusion_local_weighted_val_wavelet_stride4
+model:
+  wavelet_fusion: stride4
