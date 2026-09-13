@@ -71,6 +71,7 @@ def build_model(config: ModelConfig, *, pretrained: bool = True) -> Segmenter:
         jpeg_variant=config.jpeg_variant,
         fusion_variant=config.fusion_variant,
         dct_aux_weight=config.dct_aux_weight,
+        forensic_contrastive_dim=config.forensic_contrastive_dim,
         pretrained=pretrained,
         decoder_kwargs=config.decoder_kwargs,
         local_image_size=config.local_image_size,

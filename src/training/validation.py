@@ -47,7 +47,7 @@ def validate(
     acc = AICAccumulator(n_bins=n_bins, small_mask_weight=config.eval.small_mask_weight)
     histograms = DeviceHistogramAccumulator(acc, device)
     meter = LossMeter()
-    criterion = SegmentationLoss(**config.loss.to_dict())
+    criterion = SegmentationLoss(**config.loss.to_dict()).eval()
 
     for batch in ConsoleProgress.iterate(loader, "Валидация, батчи"):
         images = batch["image"].to(device, non_blocking=True, memory_format=torch.channels_last)

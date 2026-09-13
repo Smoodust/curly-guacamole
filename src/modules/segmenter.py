@@ -31,6 +31,7 @@ class Segmenter(nn.Module):
         jpeg_variant='baseline',
         fusion_variant='baseline',
         dct_aux_weight=0.0,
+        forensic_contrastive_dim=0,
         decoder_kwargs=None,
         local_image_size=0,
         luma_image_size=0,
@@ -39,6 +40,10 @@ class Segmenter(nn.Module):
         resize_variant='linear',
     ):
         super().__init__()
+        if type(forensic_contrastive_dim) is not int or forensic_contrastive_dim < 0:
+            raise ValueError('forensic_contrastive_dim must be an integer >= 0')
+        if forensic_contrastive_dim and not use_forensics:
+            raise ValueError('forensic_contrastive_dim requires use_forensics')
         if type(wavelet_image_size) is not int or wavelet_image_size < 0 or wavelet_image_size % 32:
             raise ValueError('wavelet_image_size must be 0 or a positive multiple of 32')
         if wavelet_image_size and (local_image_size or luma_image_size or strided_resize or
@@ -82,6 +87,7 @@ class Segmenter(nn.Module):
             forensic_mode=forensic_mode,
             jpeg_variant=jpeg_variant,
             fusion_variant=fusion_variant,
+            forensic_contrastive_dim=forensic_contrastive_dim,
         ) if use_forensics else None
 
         self.decoder = EMCADDecoder(
@@ -147,13 +153,15 @@ class Segmenter(nn.Module):
         )
 
         dct_aux_logits = None
+        forensic_result = None
         if self.forensic_fusion is not None:
             if forensic_map is None:
                 forensic_map = self._empty_forensic_map(image)
             if self.training:
-                encoder_features, dct_aux_logits = self.forensic_fusion(
-                    encoder_features, forensic_map, return_aux=True, jpeg=jpeg,
+                forensic_result = self.forensic_fusion.forward_training(
+                    encoder_features, forensic_map, jpeg=jpeg,
                 )
+                encoder_features, dct_aux_logits = forensic_result.features, forensic_result.aux_logits
             else:
                 encoder_features = self.forensic_fusion(encoder_features, forensic_map, jpeg=jpeg)
 
@@ -187,6 +195,9 @@ class Segmenter(nn.Module):
 
         if dct_aux_logits is not None:
             result["dct_aux_logits"] = dct_aux_logits
+        if forensic_result is not None and forensic_result.embeddings is not None:
+            result['forensic_embeddings'] = forensic_result.embeddings
+            result['forensic_available'] = forensic_result.available
         if self.training and self.forensic_mode == 'jpeg' and self.forensic_fusion.aux_head is not None:
             result['dct_aux_available'] = torch.tensor(
                 [sample.get('available', True) for sample in jpeg], device=image.device, dtype=torch.bool)

@@ -82,7 +82,9 @@ class SegmentationLoss(torch.nn.Module):
 
     def __init__(self, *, dice_scope="all", dice_weight=1.0, aux_weight=0.0, dct_aux_weight=0.0,
                  pixel_loss='bce', focal_gamma=1.0, dice_area_reference=0.0,
-                 dice_area_max_weight=3.0, boundary_weight=0.0, aux_loss_weight=None):
+                 dice_area_max_weight=3.0, boundary_weight=0.0, aux_loss_weight=None,
+                 forensic_intra_weight=0.0, forensic_intra_temperature=.1,
+                 forensic_intra_max_samples=256, forensic_intra_positive_fraction=.9):
         super().__init__()
         if dice_scope not in {"all", "positive"}:
             raise ValueError("loss.dice_scope must be 'all' or 'positive'")
@@ -96,7 +98,15 @@ class SegmentationLoss(torch.nn.Module):
         LossConfig(dice_scope=dice_scope, dice_weight=dice_weight, pixel_loss=pixel_loss,
                    focal_gamma=focal_gamma, dice_area_reference=dice_area_reference,
                    dice_area_max_weight=dice_area_max_weight, boundary_weight=boundary_weight,
-                   aux_loss_weight=aux_loss_weight)
+                   aux_loss_weight=aux_loss_weight, forensic_intra_weight=forensic_intra_weight,
+                   forensic_intra_temperature=forensic_intra_temperature,
+                   forensic_intra_max_samples=forensic_intra_max_samples,
+                   forensic_intra_positive_fraction=forensic_intra_positive_fraction)
+        from src.modules.forensic_contrastive import ForensicIntraContrastiveLoss
+        self.forensic_intra_weight = forensic_intra_weight
+        self.forensic_intra = ForensicIntraContrastiveLoss(
+            forensic_intra_temperature, forensic_intra_max_samples,
+            forensic_intra_positive_fraction) if forensic_intra_weight > 0 else None
         self.aux_weight = aux_weight if aux_loss_weight is None else aux_loss_weight
         self.dct_aux_weight = dct_aux_weight
         self.pixel_loss = pixel_loss
@@ -172,6 +182,13 @@ class SegmentationLoss(torch.nn.Module):
             "dice_pos": ((per_image * positive).sum(), positive.sum()),
             "dice_neg": ((per_image * ~positive).sum(), (~positive).sum()),
         }
+        if self.training and self.forensic_intra is not None:
+            if 'forensic_embeddings' not in out or 'forensic_available' not in out:
+                raise ValueError('Active forensic contrastive training requires embeddings and availability')
+            contrastive = self.forensic_intra(out['forensic_embeddings'], batch['mask'],
+                                            out['forensic_available'], batch.get('valid_mask'))
+            components['forensic_intra'] = self.forensic_intra_weight * contrastive.loss
+            diagnostics.update(contrastive.diagnostics)
         return LossResult(sum(components.values()), components, diagnostics)
 
 
@@ -198,8 +215,12 @@ class LossMeter:
         self.counts[key] = self.counts.get(key, 0) + count
 
     def compute(self):
-        return {key: float(value / self.counts[key]) for key, value in self.sums.items()
-                if float(self.counts[key]) > 0}
+        result = {key: float(value / self.counts[key]) for key, value in self.sums.items()
+                  if float(self.counts[key]) > 0}
+        if 'forensic_intra_coverage' in self.sums:
+            result['forensic_intra_eligible_count'] = float(self.sums['forensic_intra_coverage'])
+            result['forensic_intra_total_count'] = float(self.counts['forensic_intra_coverage'])
+        return result
 
 
 def compute_loss(out, batch, aux_weight: float = 0.0, dct_aux_weight: float = 0.0):

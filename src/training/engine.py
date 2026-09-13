@@ -16,7 +16,7 @@ from src.eval.protocol import EvaluationProtocol
 from src.forensic.dct.constants import CHANNELS as FMAP_CHANNELS
 from src.losses import LossMeter, SegmentationLoss
 from src.progress import ConsoleProgress
-from src.training.base import set_random_seed
+from src.training.base import TorchRNGState, set_random_seed
 from src.training.builders import (
     AmpContext,
     build_amp,
@@ -82,6 +82,7 @@ class ExperimentRunner:
         optimizer = build_optimizer(cfg.train, model)
         ConsoleProgress.info(f"Создание DataLoader: batch_size={cfg.train.batch_size}, workers={cfg.train.workers}")
         train_loader, val_loader = build_loaders(cfg.train, train_ds, val_ds)
+        self._isolate_loader_rng(train_loader, val_loader)
 
         ConsoleProgress.info(f"DataLoader готовы: train={len(train_loader)} батчей, val={len(val_loader)}; настройка scheduler, AMP scaler и EMA")
         steps_per_epoch = math.ceil(len(train_loader) / cfg.train.accum_steps)
@@ -207,11 +208,20 @@ class ExperimentRunner:
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
 
+    def _isolate_loader_rng(self, train_loader, val_loader):
+        if self.config.model.forensic_contrastive_dim:
+            # Recreating persistent iterators on resume must not consume the
+            # CPU stream used by model dropout and contrastive sampling.
+            for offset, loader in enumerate((train_loader, val_loader)):
+                loader.generator = torch.Generator().manual_seed(self.config.seed + offset)
+
     @staticmethod
     def _save_training_checkpoint(run, model, ema, optimizer, scheduler, scaler,
                                   epoch, state, plain_config, *, validation_complete):
         """Atomic training commit; validation artifacts are a separate phase."""
         run.save_state({
+            **({'torch_rng_state': TorchRNGState.capture()}
+               if plain_config.get('forensic_contrastive_dim', 0) else {}),
             'model': model.state_dict(),
             'ema': ema.module.state_dict(),
             'ema_n_averaged': int(ema.n_averaged),
@@ -283,7 +293,7 @@ class ExperimentRunner:
             saved_values = snapshot.get(section, snapshot)
             for key, value in values.items():
                 # Snapshots predating optional native detail branches mean disabled.
-                default = 0 if section == 'model' and key in {'luma_image_size', 'wavelet_image_size'} else None
+                default = 0 if section == 'model' and key in {'luma_image_size', 'wavelet_image_size', 'forensic_contrastive_dim'} else None
                 if section == 'loss':
                     default = getattr(LossConfig(), key)
                 if section == 'model' and key in {'jpeg_variant', 'fusion_variant'}:
@@ -338,6 +348,8 @@ class ExperimentRunner:
         scheduler.load_state_dict(saved["scheduler"])
         if saved.get("scaler"):
             scaler.load_state_dict(saved["scaler"])
+        if cfg.model.forensic_contrastive_dim and 'torch_rng_state' in saved:
+            TorchRNGState.restore(saved['torch_rng_state'])
 
         saved_epoch = int(saved["epoch"])
         state.seen_total = int(

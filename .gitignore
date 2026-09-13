@@ -48,6 +48,7 @@ docs/*
 !docs/jpeg_ablation.md
 !docs/strided_resize.md
 !docs/jpeg_fusion_experiments.md
+!docs/forensic_intra_contrastive.md
 
 tmp/
 runs/

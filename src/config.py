@@ -72,6 +72,7 @@ class ModelConfig(ConfigSection):
     jpeg_variant: str = 'baseline'
     fusion_variant: str = 'baseline'
     dct_aux_weight: float = 0.0
+    forensic_contrastive_dim: int = 0
     decoder_kwargs: dict[str, Any] = field(default_factory=dict)
     local_image_size: int = 0
     luma_image_size: int = 0
@@ -81,6 +82,10 @@ class ModelConfig(ConfigSection):
 
     def __post_init__(self):
         _non_empty_str(self.encoder_name, 'model.encoder_name')
+        if type(self.forensic_contrastive_dim) is not int or self.forensic_contrastive_dim < 0:
+            raise ValueError('model.forensic_contrastive_dim must be an integer >= 0')
+        if self.forensic_contrastive_dim and not self.use_forensics:
+            raise ValueError('forensic_contrastive_dim requires use_forensics')
         if type(self.wavelet_image_size) is not int or self.wavelet_image_size < 0 or self.wavelet_image_size % 32:
             raise ValueError('model.wavelet_image_size must be 0 or a positive multiple of 32')
         if self.wavelet_image_size and (self.local_image_size or self.luma_image_size or self.strided_resize
@@ -243,11 +248,22 @@ class LossConfig(ConfigSection):
     dice_area_max_weight: float = 3.0
     boundary_weight: float = 0.0
     aux_loss_weight: float | None = None
+    forensic_intra_weight: float = 0.0
+    forensic_intra_temperature: float = 0.1
+    forensic_intra_max_samples: int = 256
+    forensic_intra_positive_fraction: float = 0.9
 
     def __post_init__(self):
         if self.dice_scope not in {'all', 'positive'}:
             raise ValueError("loss.dice_scope must be 'all' or 'positive'")
         _nonnegative(self.dice_weight, 'loss.dice_weight')
+        _nonnegative(self.forensic_intra_weight, 'loss.forensic_intra_weight')
+        if not math.isfinite(self.forensic_intra_temperature) or self.forensic_intra_temperature <= 0:
+            raise ValueError('loss.forensic_intra_temperature must be finite and positive')
+        if type(self.forensic_intra_max_samples) is not int or self.forensic_intra_max_samples < 2:
+            raise ValueError('loss.forensic_intra_max_samples must be an integer >= 2')
+        if not math.isfinite(self.forensic_intra_positive_fraction) or not 0 < self.forensic_intra_positive_fraction <= 1:
+            raise ValueError('loss.forensic_intra_positive_fraction must be in (0, 1]')
         if self.pixel_loss not in {'bce', 'focal'}:
             raise ValueError("loss.pixel_loss must be 'bce' or 'focal'")
         for name in ('focal_gamma', 'boundary_weight', 'dice_area_reference', 'dice_area_max_weight'):
@@ -290,6 +306,8 @@ class ExperimentConfig:
     def __post_init__(self):
         if type(self.seed) is not int or self.seed < 0:
             raise ValueError('seed must be a nonnegative integer')
+        if bool(self.model.forensic_contrastive_dim) != bool(self.loss.forensic_intra_weight):
+            raise ValueError('forensic_contrastive_dim and forensic_intra_weight must be enabled together')
         if self.augmentation.final_full_frame_epochs > self.train.epochs:
             raise ValueError('augmentation.final_full_frame_epochs must not exceed train.epochs')
         if self.train.full_train_epochs > self.augmentation.final_full_frame_epochs:
