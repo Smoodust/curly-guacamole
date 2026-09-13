@@ -1,0 +1,13 @@
+extends: jpeg576_fusion_local_bn_aux_uniform_mask_area_18ep_full_train.yaml
+paths:
+  run_name: jpeg576_fusion_local_bn_aux_uniform_mask_area_18ep_full_train_focal_boundary
+loss:
+  # Match the focal + area-weighted Dice + boundary experiment.
+  pixel_loss: focal
+  focal_gamma: 1.0
+  dice_scope: all
+  dice_weight: 1.0
+  dice_area_reference: 0.05
+  dice_area_max_weight: 3.0
+  boundary_weight: 1.0
+  # Auxiliary BCE + Dice and model.aux_weight are inherited unchanged.
