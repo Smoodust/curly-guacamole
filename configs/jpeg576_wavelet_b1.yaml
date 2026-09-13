@@ -1,0 +1,10 @@
+# Encoder ablation against runs/jpeg576_wavelet: keep RGB 576 and wavelet 1024.
+extends: jpeg576_fusion_local_weighted_val_wavelet.yaml
+paths:
+  run_name: jpeg576_wavelet_b1
+model:
+  encoder_name: pvt_v2_b1
+train:
+  # Match the recorded B2 run; AIIJC_* runtime overrides still take precedence.
+  batch_size: 16
+  accum_steps: 1
