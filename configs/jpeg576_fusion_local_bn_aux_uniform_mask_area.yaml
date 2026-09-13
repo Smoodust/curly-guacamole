@@ -1,0 +1,6 @@
+extends: jpeg576_fusion_local_bn_aux_weighted_val.yaml
+paths:
+  run_name: jpeg576_fusion_local_bn_aux_uniform_mask_area
+train:
+  sampling_strategy: uniform_mask_area
+  full_train_epochs: 0

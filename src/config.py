@@ -160,6 +160,7 @@ class TrainConfig(ConfigSection):
     epoch_size: int = 24000
     full_train_epochs: int = 0
     negative_fraction: float = .25
+    sampling_strategy: str = 'negative_fraction'
     batch_size: int = 4
     accum_steps: int = 4
     warmup_frac: float = .05
@@ -194,6 +195,8 @@ class TrainConfig(ConfigSection):
             _check_probability_grid((getattr(self, name),), f'train.{name}')
         if not 0 < self.negative_fraction < 1:
             raise ValueError('train.negative_fraction must be in (0, 1)')
+        if self.sampling_strategy not in {'negative_fraction', 'uniform_mask_area'}:
+            raise ValueError('train.sampling_strategy must be negative_fraction or uniform_mask_area')
         if not 0 <= self.ema_decay < 1:
             raise ValueError('train.ema_decay must be in [0, 1)')
         if self.amp not in {'off', 'fp16', 'bf16'}:

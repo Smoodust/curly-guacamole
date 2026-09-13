@@ -18,7 +18,7 @@ from src.data.augmentation.pipeline import AugmentationPipeline
 from src.data.collation import ValidationCollator
 from src.data.data_workspace import DataWorkspace
 from src.data.dataset import AIIJCDataset
-from src.training.sampling import FinalFullTrainSampler
+from src.training.sampling import FinalFullTrainSampler, UniformMaskAreaSampler
 
 if TYPE_CHECKING:
     from src.modules.segmenter import Segmenter
@@ -157,6 +157,10 @@ def build_sampler(
     config: TrainConfig,
     train_ds: AIIJCDataset,
 ) -> WeightedRandomSampler:
+    if config.sampling_strategy == 'uniform_mask_area':
+        if 'mask_area' not in train_ds.df:
+            raise ValueError('uniform_mask_area requires mask_area in the train dataset')
+        return UniformMaskAreaSampler(train_ds.df['mask_area'], config.epoch_size)
     neg = train_ds.is_negative
     if neg is None:
         raise ValueError("train dataset must expose is_negative for weighted sampling")

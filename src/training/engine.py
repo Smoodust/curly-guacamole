@@ -266,6 +266,8 @@ class ExperimentRunner:
         saved_dataset = snapshot.get('dataset', snapshot)
         saved_train = snapshot.get('train', snapshot)
         saved_eval = snapshot.get('eval', snapshot)
+        if saved_train.get('sampling_strategy', 'negative_fraction') != cfg.train.sampling_strategy:
+            raise ValueError('Cannot resume with a different train.sampling_strategy; choose a new run_name')
         if saved_eval.get('small_mask_weight', 1.0) != cfg.eval.small_mask_weight:
             raise ValueError('Cannot resume with a different eval.small_mask_weight; choose a new run_name')
         if cfg.train.full_train_epochs or saved_train.get('full_train_epochs', 0):
