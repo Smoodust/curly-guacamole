@@ -80,6 +80,11 @@ def build_model(config: ModelConfig, *, pretrained: bool = True) -> Segmenter:
         wavelet_fusion=config.wavelet_fusion,
         strided_resize=config.strided_resize,
         resize_variant=config.resize_variant,
+        noise_encoder_name=config.noise_encoder_name,
+        guided_radius=config.guided_radius,
+        guided_epsilon=config.guided_epsilon,
+        guided_scale=config.guided_scale,
+        dual_fusion_width=config.dual_fusion_width,
     )
     if pretrained and config.jpeg_pretrained is not None:
         path = Path(config.jpeg_pretrained)
@@ -241,7 +246,7 @@ def build_optimizer(
         no_decay = parameter.ndim <= 1 or name.endswith(("channel_gate", "gamma"))
         if name.startswith(("forensic_fusion.", "branch.", "fuse.")):
             groups["fmap_nd" if no_decay else "fmap"].append(parameter)
-        elif name.startswith("encoder."):
+        elif name.startswith("encoder.") and not name.startswith('encoder.fusions.'):
             groups["enc_nd" if no_decay else "enc"].append(parameter)
         else:
             groups["dec_nd" if no_decay else "dec"].append(parameter)

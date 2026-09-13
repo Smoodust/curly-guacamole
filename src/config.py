@@ -80,9 +80,25 @@ class ModelConfig(ConfigSection):
     wavelet_fusion: str = 'late'
     strided_resize: bool = False
     resize_variant: str = 'linear'
+    noise_encoder_name: str | None = None
+    guided_radius: int = 2
+    guided_epsilon: float = .01
+    guided_scale: float = .25
+    dual_fusion_width: int = 16
 
     def __post_init__(self):
         _non_empty_str(self.encoder_name, 'model.encoder_name')
+        if self.noise_encoder_name is not None:
+            _non_empty_str(self.noise_encoder_name, 'model.noise_encoder_name')
+            if not self.wavelet_image_size or self.strided_resize:
+                raise ValueError('dual encoder requires wavelet native input without strided resize')
+        for key in ('guided_radius', 'dual_fusion_width'):
+            if type(getattr(self, key)) is not int or getattr(self, key) < 1:
+                raise ValueError(f'model.{key} must be a positive integer')
+        for key in ('guided_epsilon', 'guided_scale'):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f'model.{key} must be finite and positive')
         if self.wavelet_fusion not in {'late', 'stride4', 'stride8', 'stride4_stride8_late'}:
             raise ValueError('wavelet_fusion must be late, stride4, stride8 or stride4_stride8_late')
         if self.wavelet_fusion != 'late' and not self.wavelet_image_size:

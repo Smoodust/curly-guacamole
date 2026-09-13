@@ -5,7 +5,8 @@ import pytest
 import torch
 
 
-def test_wavelet_jpeg_dataset_loaders_and_budget(tmp_path):
+@pytest.mark.parametrize('recipe', ['jpeg576_fusion_local_weighted_val_wavelet', 'jpeg576_wavelet_dual_b0', 'jpeg576_wavelet_dual_b1'])
+def test_wavelet_jpeg_dataset_loaders_and_budget(tmp_path, recipe):
     import pandas as pd
     from PIL import Image
     from src.config import load_experiment_config
@@ -15,7 +16,7 @@ def test_wavelet_jpeg_dataset_loaders_and_budget(tmp_path):
     from src.training.transfer import BatchTransfer
     from src.budget import count_gflops
 
-    config = load_experiment_config('configs/jpeg576_fusion_local_weighted_val_wavelet.yaml')
+    config = load_experiment_config(f'configs/{recipe}.yaml')
     workspace = DataWorkspace(tmp_path)
     workspace.train_root.mkdir()
     rows = []
@@ -42,10 +43,16 @@ def test_wavelet_jpeg_dataset_loaders_and_budget(tmp_path):
         model(batch['image'], jpeg=batch['jpeg'])
     with torch.device('meta'):
         full = build_model(config.model, pretrained=False)
-        baseline = build_model(replace(config.model, wavelet_image_size=0), pretrained=False)
+        baseline = build_model(replace(config.model, encoder_name='pvt_v2_b2', wavelet_image_size=0,
+                                       noise_encoder_name=None), pretrained=False)
     cost = count_gflops(full, 576, native_size=(1024, 1024))
     base_cost = count_gflops(baseline, 576, native_size=(1024, 1024))
-    assert base_cost < cost < 100
+    assert cost > 0
+    if recipe == 'jpeg576_fusion_local_weighted_val_wavelet':
+        assert base_cost < cost < 100
+    elif recipe == 'jpeg576_wavelet_dual_b0':
+        assert cost < base_cost < 100
+    # B1/B1 is deliberately retained as an over-budget research recipe.
 
 
 @pytest.mark.parametrize('nested', [False, True])
@@ -71,7 +78,8 @@ def test_old_resume_defaults_wavelet_to_disabled(tmp_path, monkeypatch, nested):
         ExperimentRunner(replace(config, model=replace(config.model, wavelet_image_size=64)))._check_resume_protocol()
 
 
-def test_wavelet_checkpoint_to_submission_png(tmp_path):
+@pytest.mark.parametrize('recipe', ['jpeg576_fusion_local_weighted_val_wavelet', 'jpeg576_wavelet_dual_b0'])
+def test_wavelet_checkpoint_to_submission_png(tmp_path, recipe):
     import pandas as pd
     from PIL import Image
     from src.config import load_experiment_config
@@ -79,7 +87,7 @@ def test_wavelet_checkpoint_to_submission_png(tmp_path):
     from src.training.runs import Run
     from src.inference.submission import create_submission
 
-    base = load_experiment_config('configs/jpeg576_fusion_local_weighted_val_wavelet.yaml')
+    base = load_experiment_config(f'configs/{recipe}.yaml')
     config = replace(base, dataset=replace(base.dataset, image_size=64),
                      model=replace(base.model, wavelet_image_size=64),
                      train=replace(base.train, device='cpu', amp='off', workers=0, batch_size=1))

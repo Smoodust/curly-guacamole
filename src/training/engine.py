@@ -302,6 +302,9 @@ class ExperimentRunner:
                     default = False
                 if section == 'model' and key == 'resize_variant':
                     default = 'linear'
+                if section == 'model' and key in {'noise_encoder_name', 'guided_radius', 'guided_epsilon', 'guided_scale', 'dual_fusion_width'}:
+                    default = {'noise_encoder_name': None, 'guided_radius': 2,
+                               'guided_epsilon': .01, 'guided_scale': .25, 'dual_fusion_width': 16}[key]
                 previous = saved_values.get(key, default)
                 if section == 'model' and key == 'wavelet_fusion':
                     previous = saved_values.get(key, 'late')

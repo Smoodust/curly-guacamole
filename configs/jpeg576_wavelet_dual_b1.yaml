@@ -1,0 +1,7 @@
+extends: jpeg576_wavelet_dual_b0.yaml
+# Research only: 108.273 GFLOPs at RGB576/native1024, above the 100 GFLOP limit.
+paths:
+  run_name: jpeg576_wavelet_dual_b1
+model:
+  encoder_name: pvt_v2_b1
+  noise_encoder_name: pvt_v2_b1

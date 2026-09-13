@@ -39,6 +39,11 @@ class Segmenter(nn.Module):
         wavelet_fusion='late',
         strided_resize=False,
         resize_variant='linear',
+        noise_encoder_name=None,
+        guided_radius=2,
+        guided_epsilon=.01,
+        guided_scale=.25,
+        dual_fusion_width=16,
     ):
         super().__init__()
         if type(forensic_contrastive_dim) is not int or forensic_contrastive_dim < 0:
@@ -79,9 +84,19 @@ class Segmenter(nn.Module):
             raise ValueError('luma_image_size requires EMCAD without other detail branches')
         self.luma_image_size = luma_image_size
 
-        self.encoder, self.strides, self.channels = build_timm_encoder(
-            encoder_name, pretrained=pretrained
-        )
+        self.noise_encoder_name = noise_encoder_name
+        if noise_encoder_name is not None:
+            from src.modules.dual_encoder import DualEncoder
+            if not wavelet_image_size or strided_resize:
+                raise ValueError('dual encoder requires wavelet native input without strided resize')
+            self.encoder = DualEncoder(encoder_name, noise_encoder_name, pretrained=pretrained,
+                                       radius=guided_radius, epsilon=guided_epsilon,
+                                       scale=guided_scale, hidden=dual_fusion_width)
+            self.strides, self.channels = list(self.encoder.strides), list(self.encoder.channels)
+        else:
+            self.encoder, self.strides, self.channels = build_timm_encoder(
+                encoder_name, pretrained=pretrained
+            )
 
         if dct_aux_weight > 0 and not use_forensics:
             raise ValueError("DCT auxiliary head requires use_forensics")
@@ -170,7 +185,7 @@ class Segmenter(nn.Module):
             raise ValueError('local_input supplied to a model with the local branch disabled')
 
         encoder_features = list(
-            self.encoder(image)
+            self.encoder(image, native_rgb) if self.noise_encoder_name is not None else self.encoder(image)
         )
 
         dct_aux_logits = None
