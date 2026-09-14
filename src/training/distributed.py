@@ -109,6 +109,14 @@ class TrainingRuntime:
         dist.all_gather_object(result, value)
         return result
 
+    def gather_to_main(self, value):
+        """Gather CPU statistics without retaining full copies on every rank."""
+        if not self.distributed:
+            return [value]
+        result = [None] * self.world_size if self.is_main else None
+        dist.gather_object(value, object_gather_list=result, dst=0)
+        return result
+
     def sum(self, value):
         dtype = torch.float32 if self.device.type == 'mps' else torch.float64
         tensor = torch.as_tensor(value, dtype=dtype, device=self.communication_device).clone()
@@ -120,6 +128,8 @@ class TrainingRuntime:
         if not self.distributed:
             return
         keys = sorted({key for keys in self.gather_objects(list(meter.sums)) for key in keys})
+        if not keys:
+            return
         values = torch.stack([torch.as_tensor(value, device=self.communication_device, dtype=torch.float64)
                               for key in keys for value in (meter.sums.get(key, 0), meter.counts.get(key, 0))])
         dist.all_reduce(values)

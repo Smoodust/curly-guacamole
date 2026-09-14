@@ -203,15 +203,10 @@ class ExperimentRunner:
                         run, model, ema, optimizer, scheduler, scaler, epoch, state, plain_config,
                         validation_complete=False,
                     )
-                validation = None
-
-                def evaluate(train_result, validation_model, loader):
-                    nonlocal validation
+                if runtime.is_main:
                     run.info(f"Обучение завершено: loss={train_result.loss:.5f}, примеров={train_result.seen}; валидация EMA")
-                    validation = validate(validation_model, loader, self.amp, cfg, self.device)
-                    return validation.tuned
-
-                tuned = runtime.main_call(evaluate, train_result, ema.module, val_loader)
+                validation = validate(ema.module, val_loader, self.amp, cfg, self.device, runtime=runtime)
+                tuned = validation.tuned
 
                 if tuned.aic > state.best_aic:
                     state.best_aic = tuned.aic

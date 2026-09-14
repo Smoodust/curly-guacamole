@@ -44,6 +44,25 @@ class FinalFullTrainSampler(Sampler):
         return iter(self.weighted_sampler)
 
 
+class DistributedValidationSampler(Sampler):
+    """Contiguous, disjoint groups of whole batches; never pad or drop rows.
+
+    Keeping the single-process batch boundaries also preserves conditional loss
+    weighting. Concatenating rank outputs restores the original dataset order.
+    """
+
+    def __init__(self, dataset, batch_size, rank, world_size):
+        batches = math.ceil(len(dataset) / batch_size)
+        self.start = min(len(dataset), (batches * rank // world_size) * batch_size)
+        self.stop = min(len(dataset), (batches * (rank + 1) // world_size) * batch_size)
+
+    def __iter__(self):
+        return iter(range(self.start, self.stop))
+
+    def __len__(self):
+        return self.stop - self.start
+
+
 class DistributedBatchSampler(Sampler):
     """Partition one global draw stream without changing its sampling weights.
 

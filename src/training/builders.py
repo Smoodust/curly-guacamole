@@ -18,7 +18,12 @@ from src.data.augmentation.pipeline import AugmentationPipeline
 from src.data.collation import ValidationCollator
 from src.data.data_workspace import DataWorkspace
 from src.data.dataset import AIIJCDataset
-from src.training.sampling import DistributedBatchSampler, FinalFullTrainSampler, UniformMaskAreaSampler
+from src.training.sampling import (
+    DistributedBatchSampler,
+    DistributedValidationSampler,
+    FinalFullTrainSampler,
+    UniformMaskAreaSampler,
+)
 
 if TYPE_CHECKING:
     from src.modules.segmenter import Segmenter
@@ -226,9 +231,13 @@ def build_loaders(
         worker_init_fn=DataLoaderThreadLimits.apply,
         prefetch_factor=prefetch if config.workers else None,
     )
+    val_batch_size = config.batch_size if local else config.batch_size * 2
+    val_sampler = (DistributedValidationSampler(val_ds, val_batch_size, runtime.rank, runtime.world_size)
+                   if runtime is not None and runtime.distributed else None)
     val_loader = DataLoader(
         val_ds,
-        batch_size=config.batch_size if local else config.batch_size * 2,
+        batch_size=val_batch_size,
+        sampler=val_sampler,
         shuffle=False,
         num_workers=config.workers,
         pin_memory=pin_memory,

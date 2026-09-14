@@ -4,13 +4,16 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
-from src.training.transfer import BatchTransfer
 
 from src.data.letterbox import Letterbox
 from src.losses import LossMeter, SegmentationLoss
 from src.progress import ConsoleProgress
+from src.training.distributed import TrainingRuntime
 from src.training.metric import AICAccumulator, AICResult
+from src.training.sampling import DistributedValidationSampler
+from src.training.transfer import BatchTransfer
 
 if TYPE_CHECKING:
     from src.config import ExperimentConfig
@@ -19,7 +22,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ValidationResult:
-    """Histograms and the selected metrics from one validation pass."""
+    """Global metrics; in distributed runs only rank zero retains OOF histograms."""
 
     accumulator: AICAccumulator
     tuned: AICResult
@@ -41,7 +44,65 @@ def validate(
     device: torch.device,
     *,
     thresholds=None,
+    runtime=None,
 ) -> ValidationResult:
+    runtime = runtime or TrainingRuntime(device)
+    if runtime.distributed:
+        if not isinstance(getattr(loader, 'sampler', None), DistributedValidationSampler):
+            raise ValueError('Distributed validation requires DistributedValidationSampler')
+        error = None
+        try:
+            acc, meter = _collect_validation(model, loader, amp, config, device, progress=runtime.is_main)
+        except Exception as exc:
+            error = f'rank {runtime.rank}: {type(exc).__name__}: {exc}'
+        # All ranks finish their independent forwards before any statistics
+        # collective, including ranks with no samples or a failed loader/model.
+        errors = runtime.gather_objects(error)
+        if any(errors):
+            raise RuntimeError('Validation failed: ' + '; '.join(error for error in errors if error))
+        runtime.reduce_meter(meter)
+        shards = runtime.gather_to_main(ValidationHistograms.pack(acc))
+        acc = (ValidationHistograms.merge(shards, config.eval.n_bins, config.eval.small_mask_weight)
+               if runtime.is_main else AICAccumulator(n_bins=config.eval.n_bins,
+                                                      small_mask_weight=config.eval.small_mask_weight))
+    else:
+        acc, meter = _collect_validation(model, loader, amp, config, device)
+    tuned, fixed = runtime.main_call(_score_validation, acc, config, thresholds)
+    return ValidationResult(accumulator=acc, tuned=tuned, resolution='original',
+                            loss_components=meter.compute(), fixed=fixed)
+
+
+class ValidationHistograms:
+    """Compact CPU arrays for transfer; rank order equals original dataset order."""
+
+    @staticmethod
+    def pack(acc):
+        return (np.asarray(acc.hist_all, dtype=np.int64).reshape(len(acc), acc.n_bins),
+                np.asarray(acc.hist_gt, dtype=np.int64).reshape(len(acc), acc.n_bins),
+                np.asarray(acc.gt_sum, dtype=np.int64), np.asarray(acc.n_pixels, dtype=np.int64),
+                np.asarray(acc.cls_prob, dtype=np.float32))
+
+    @staticmethod
+    def merge(shards, n_bins, small_mask_weight):
+        acc = AICAccumulator(n_bins=n_bins, small_mask_weight=small_mask_weight)
+        for shard in shards:
+            acc.update_hist(*shard)
+        return acc
+
+
+def _score_validation(acc, config, thresholds):
+    if thresholds is None:
+        ConsoleProgress.info('Подбор порогов маски, классификации и минимальной площади по AIC')
+        tuned = acc.best(config.eval.mask_thresholds, config.eval.cls_thresholds, config.eval.min_areas)
+    else:
+        if thresholds.mask_threshold >= 1 or thresholds.mask_threshold * acc.n_bins != int(thresholds.mask_threshold * acc.n_bins):
+            raise ValueError('Frozen mask threshold must match an exact histogram boundary')
+        tuned = acc.evaluate(thresholds.mask_threshold, thresholds.cls_threshold, thresholds.min_area)
+    ConsoleProgress.info(f'Оценка завершена: {tuned}')
+    return tuned, acc.evaluate(.5, .0, .0)
+
+
+def _collect_validation(model, loader, amp, config, device, *, progress=True):
     model.eval()
     n_bins = config.eval.n_bins
     acc = AICAccumulator(n_bins=n_bins, small_mask_weight=config.eval.small_mask_weight)
@@ -49,7 +110,8 @@ def validate(
     meter = LossMeter()
     criterion = SegmentationLoss(**config.loss.to_dict()).eval()
 
-    for batch in ConsoleProgress.iterate(loader, "Валидация, батчи"):
+    batches = ConsoleProgress.iterate(loader, 'Валидация, батчи') if progress else loader
+    for batch in batches:
         images = batch["image"].to(device, non_blocking=True, memory_format=torch.channels_last)
         fmap = batch["fmap"].to(device, non_blocking=True) if "fmap" in batch else None
 
@@ -79,16 +141,7 @@ def validate(
                               cls[index:index + 1])
 
     histograms.flush()
-    if thresholds is None:
-        ConsoleProgress.info("Подбор порогов маски, классификации и минимальной площади по AIC")
-        tuned = acc.best(config.eval.mask_thresholds, config.eval.cls_thresholds, config.eval.min_areas)
-    else:
-        if thresholds.mask_threshold >= 1 or thresholds.mask_threshold * n_bins != int(thresholds.mask_threshold * n_bins):
-            raise ValueError('Frozen mask threshold must match an exact histogram boundary')
-        tuned = acc.evaluate(thresholds.mask_threshold, thresholds.cls_threshold, thresholds.min_area)
-    ConsoleProgress.info(f"Оценка завершена: {tuned}")
-    return ValidationResult(accumulator=acc, tuned=tuned, resolution="original",
-                            loss_components=meter.compute(), fixed=acc.evaluate(.5, .0, .0))
+    return acc, meter
 
 
 class DeviceHistogramAccumulator:

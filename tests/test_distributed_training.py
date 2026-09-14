@@ -145,18 +145,24 @@ def _assert_reference_weight(weight):
     assert weight.item() == pytest.approx(reference.weight.item(), abs=1e-6)
 
 
-def _run_process_test(worker, folder):
+def _run_process_test(worker, folder, module='tests.test_distributed_training'):
     import subprocess
     import sys
+    from pathlib import Path
 
-    processes = [subprocess.Popen([sys.executable, '-c',
-                 f'import numpy; from tests.test_distributed_training import {worker}; '
+    processes = []
+    logs = [Path(folder) / f'worker-{rank}.log' for rank in range(2)]
+    for rank in range(2):
+        with logs[rank].open('w', encoding='utf-8') as output:
+            processes.append(subprocess.Popen([sys.executable, '-c',
+                 f'import numpy; from {module} import {worker}; '
                  f'import sys; {worker}(int(sys.argv[1]), sys.argv[2])',
                  str(rank), str(folder)],
-                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
-                 for rank in range(2)]
+                 stdout=output, stderr=subprocess.STDOUT,
+                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0))
     try:
-        assert [process.wait(timeout=55) for process in processes] == [0, 0]
+        codes = [process.wait(timeout=55) for process in processes]
+        assert codes == [0, 0], '\n'.join(path.read_text(encoding='utf-8', errors='replace') for path in logs)
     finally:
         for process in processes:
             if process.poll() is None:
@@ -189,7 +195,7 @@ def _distributed_runner_worker(rank, folder):
 
             def failing_validation(*args, **kwargs):
                 calls.append(rank)
-                raise ValueError('intentional validation interruption')
+                raise RuntimeError('intentional validation interruption')
 
             patch.setattr(engine, 'validate', failing_validation)
             with pytest.raises(RuntimeError, match='intentional validation interruption'):
@@ -200,7 +206,7 @@ def _distributed_runner_worker(rank, folder):
             assert not any(key.startswith('module.') for key in checkpoint['model'])
             patch.setattr(engine, 'validate', validation)
             run = engine.ExperimentRunner(config, runtime=runtime).run()
-            assert calls == ([0] if rank == 0 else [])
+            assert calls == [rank]
             final = run.load_state('last.pt', map_location='cpu')
             assert final['samples'] == 4
             assert final['validation_complete'] is True
