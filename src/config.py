@@ -79,6 +79,7 @@ class ModelConfig(ConfigSection):
     luma_image_size: int = 0
     wavelet_image_size: int = 0
     wavelet_fusion: str = 'late'
+    wavelet_aux_source: str = 'wavelet'
     strided_resize: bool = False
     resize_variant: str = 'linear'
     noise_encoder_name: str | None = None
@@ -104,6 +105,10 @@ class ModelConfig(ConfigSection):
             raise ValueError('wavelet_fusion must be late, stride4, stride8 or stride4_stride8_late')
         if self.wavelet_fusion != 'late' and not self.wavelet_image_size:
             raise ValueError('early wavelet_fusion requires wavelet_image_size')
+        if self.wavelet_aux_source not in {'wavelet', 'decoder'}:
+            raise ValueError('wavelet_aux_source must be wavelet or decoder')
+        if self.wavelet_aux_source == 'decoder' and (not self.wavelet_image_size or self.wavelet_fusion != 'late'):
+            raise ValueError('wavelet_aux_source=decoder requires late wavelet fusion')
         if type(self.forensic_contrastive_dim) is not int or self.forensic_contrastive_dim < 0:
             raise ValueError('model.forensic_contrastive_dim must be an integer >= 0')
         if self.forensic_contrastive_dim and not self.use_forensics:

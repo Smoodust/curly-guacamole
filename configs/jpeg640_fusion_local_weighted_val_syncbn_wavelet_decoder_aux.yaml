@@ -1,0 +1,5 @@
+extends: jpeg640_fusion_local_weighted_val_syncbn_wavelet.yaml
+paths:
+  run_name: jpeg640_fusion_local_weighted_val_syncbn_wavelet_decoder_aux
+model:
+  wavelet_aux_source: decoder

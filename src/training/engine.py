@@ -377,6 +377,8 @@ class ExperimentRunner:
                 previous = saved_values.get(key, default)
                 if section == 'model' and key == 'wavelet_fusion':
                     previous = saved_values.get(key, 'late')
+                if section == 'model' and key == 'wavelet_aux_source':
+                    previous = saved_values.get(key, 'wavelet')
                 if isinstance(value, tuple) and isinstance(previous, list):
                     previous = tuple(previous)
                 if previous != value:

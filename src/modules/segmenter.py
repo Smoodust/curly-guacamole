@@ -37,6 +37,7 @@ class Segmenter(nn.Module):
         luma_image_size=0,
         wavelet_image_size=0,
         wavelet_fusion='late',
+        wavelet_aux_source='wavelet',
         strided_resize=False,
         resize_variant='linear',
         noise_encoder_name=None,
@@ -62,6 +63,10 @@ class Segmenter(nn.Module):
         if wavelet_fusion != 'late' and not wavelet_image_size:
             raise ValueError('early wavelet_fusion requires wavelet_image_size')
         self.wavelet_fusion = wavelet_fusion
+        if wavelet_aux_source not in {'wavelet', 'decoder'}:
+            raise ValueError('wavelet_aux_source must be wavelet or decoder')
+        if wavelet_aux_source == 'decoder' and (not wavelet_image_size or wavelet_fusion != 'late'):
+            raise ValueError('wavelet_aux_source=decoder requires late wavelet fusion')
         if strided_resize and (use_forensics or local_image_size or luma_image_size):
             raise ValueError('strided_resize requires RGB-only without local/luma branches')
         self.strided_resize = strided_resize
@@ -115,7 +120,8 @@ class Segmenter(nn.Module):
             encoder_channels=self.channels,
             encoder_strides=self.strides,
             norm=norm,
-            use_aux=aux_weight > 0 and not (local_image_size or luma_image_size or wavelet_image_size),
+            use_aux=aux_weight > 0 and not (local_image_size or luma_image_size or
+                                          (wavelet_image_size and wavelet_aux_source == 'wavelet')),
             **(decoder_kwargs or {}),
         )
         self.local_branch = LocalBranch(self.decoder.out_channels, aux_weight > 0) if local_image_size else None
@@ -134,6 +140,11 @@ class Segmenter(nn.Module):
             early_channels = {name: self.channels[index] for name, index in self.wavelet_feature_indices.items()}
             self.wavelet_branch = MultiScaleWaveletBranch(
                 self.decoder.out_channels, early_channels, wavelet_image_size, aux_weight > 0)
+        elif wavelet_aux_source == 'decoder':
+            # Keep shared heads initialized exactly as in the no-wavelet baseline.
+            # Modules are constructed on CPU before the training device transfer.
+            with torch.random.fork_rng(devices=[]):
+                self.wavelet_branch = WaveletBranch(wavelet_channels, wavelet_image_size, use_aux=False)
         else:
             self.wavelet_branch = WaveletBranch(wavelet_channels, wavelet_image_size, aux_weight > 0) if wavelet_image_size else None
 
@@ -221,7 +232,9 @@ class Segmenter(nn.Module):
         if self.luma_branch is not None:
             decoder_features, aux_logits = self.luma_branch(native_rgb, decoder_features)
         if self.wavelet_branch is not None and self.wavelet_fusion == 'late':
-            decoder_features, aux_logits = self.wavelet_branch(native_rgb, decoder_features)
+            decoder_features, wavelet_aux = self.wavelet_branch(native_rgb, decoder_features)
+            if wavelet_aux is not None:
+                aux_logits = wavelet_aux
         elif wavelet_detail is not None:
             decoder_features = self.wavelet_branch.fuse(wavelet_detail, decoder_features)
 

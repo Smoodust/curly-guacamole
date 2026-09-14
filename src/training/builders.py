@@ -83,6 +83,7 @@ def build_model(config: ModelConfig, *, pretrained: bool = True) -> Segmenter:
         luma_image_size=config.luma_image_size,
         wavelet_image_size=config.wavelet_image_size,
         wavelet_fusion=config.wavelet_fusion,
+        wavelet_aux_source=config.wavelet_aux_source,
         strided_resize=config.strided_resize,
         resize_variant=config.resize_variant,
         noise_encoder_name=config.noise_encoder_name,
