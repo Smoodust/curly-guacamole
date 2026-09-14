@@ -1,0 +1,6 @@
+extends: jpeg640_fusion_local_weighted_val_syncbn.yaml
+paths:
+  run_name: jpeg640_fusion_local_weighted_val_syncbn_wavelet
+model:
+  wavelet_image_size: 1024
+  wavelet_fusion: late
