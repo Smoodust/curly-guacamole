@@ -1,0 +1,5 @@
+extends: jpeg640_fusion_spatial_weighted_val.yaml
+paths:
+  run_name: jpeg640_fusion_spatial_weighted_val_syncbn
+model:
+  sync_batchnorm: true
