@@ -1,0 +1,9 @@
+extends: jpeg576_wavelet_dual_b0.yaml
+# 99.251 GFLOPs at native1024; larger native JPEG frames may exceed 100.
+paths:
+  run_name: jpeg1024_wavelet_dual_efficientvit_b1
+dataset:
+  image_size: 1024
+model:
+  encoder_name: efficientvit_b1
+  noise_encoder_name: efficientvit_b1

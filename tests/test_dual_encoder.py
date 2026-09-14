@@ -92,11 +92,12 @@ def test_legacy_resume_and_dual_mismatch(tmp_path, monkeypatch, nested):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required')
-def test_dual_cuda_amp_training_step_and_reload():
+@pytest.mark.parametrize('recipe', ['jpeg576_wavelet_dual_b0', 'jpeg1024_wavelet_dual_efficientvit_b1'])
+def test_dual_cuda_amp_training_step_and_reload(recipe):
     from src.config import load_experiment_config
     from src.losses import SegmentationLoss
     from src.training.builders import build_model, build_optimizer, configure_memory_format, build_ema
-    cfg = load_experiment_config('configs/jpeg576_wavelet_dual_b0.yaml')
+    cfg = load_experiment_config(f'configs/{recipe}.yaml')
     model_cfg = replace(cfg.model, wavelet_image_size=64)
     model = configure_memory_format(build_model(model_cfg, pretrained=False).cuda()).train()
     optimizer = build_optimizer(cfg.train, model)
@@ -117,7 +118,7 @@ def test_dual_cuda_amp_training_step_and_reload():
         assert sum(g.abs().sum() for g in grads) > 0
     optimizer.step()
     ema.update_parameters(model)
-    restored = build_model(model_cfg, pretrained=False).cuda().eval()
+    restored = configure_memory_format(build_model(model_cfg, pretrained=False).cuda()).eval()
     restored.load_state_dict(ema.module.state_dict(), strict=True)
     ema.module.eval()
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):

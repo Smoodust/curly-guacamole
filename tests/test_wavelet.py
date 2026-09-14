@@ -78,7 +78,8 @@ def test_old_resume_defaults_wavelet_to_disabled(tmp_path, monkeypatch, nested):
         ExperimentRunner(replace(config, model=replace(config.model, wavelet_image_size=64)))._check_resume_protocol()
 
 
-@pytest.mark.parametrize('recipe', ['jpeg576_fusion_local_weighted_val_wavelet', 'jpeg576_wavelet_dual_b0'])
+@pytest.mark.parametrize('recipe', ['jpeg576_fusion_local_weighted_val_wavelet', 'jpeg576_wavelet_dual_b0',
+                                   'jpeg1024_wavelet_dual_efficientvit_b1'])
 def test_wavelet_checkpoint_to_submission_png(tmp_path, recipe):
     import pandas as pd
     from PIL import Image
