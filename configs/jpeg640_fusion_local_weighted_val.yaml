@@ -1,0 +1,7 @@
+extends: jpeg640_pretrained.yaml
+paths:
+  run_name: jpeg640_fusion_local_weighted_val
+model:
+  fusion_variant: local
+eval:
+  small_mask_weight: 1.6

@@ -47,7 +47,10 @@ batch=1, native=1024², 3 прогрева и 10 повторов CUDA Events:
 `benchmark.json`, `verification.json`.
 
 Новый `configs/jpeg640_pretrained.yaml` наследует `jpeg576_pretrained.yaml`,
-меняя только RGB-размер на 640 и `run_name` на `jpeg640_pretrained`.
+меняя RGB-размер на 640, `run_name` на `jpeg640_pretrained` и
+`eval.small_mask_weight` на 1.6 (weighted AIC, как в local/spatial weighted).
+Split и исходное разрешение validation-масок сохранены. Старые запуски с весом
+1.0 автоматически не пересчитываются; resume с другим весом метрики запрещён.
 Расписание, loss, sampling и аугментации сохранены. В `notebooks/train.ipynb`
 выбран этот эксперимент. Запуск из корня проекта:
 

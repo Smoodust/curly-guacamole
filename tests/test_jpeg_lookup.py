@@ -110,7 +110,8 @@ def test_640_recipe_preserves_training_and_fits_full_hd_budget():
     assert config.dataset == replace(base.dataset, image_size=640)
     assert config.model == base.model
     assert config.train == base.train and config.loss == base.loss
-    assert config.augmentation == base.augmentation and config.eval == base.eval
+    assert config.augmentation == base.augmentation
+    assert config.eval == replace(base.eval, small_mask_weight=1.6)
     assert config.paths.run_name == 'jpeg640_pretrained'
     assert InferenceConfig.from_snapshot(config.to_flat_dict()).model == config.model
     with torch.device('meta'):
