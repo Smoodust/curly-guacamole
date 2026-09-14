@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections.abc import Iterable, Sized
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 
 import torch
 from torch import nn
 
 from src.budget import count_gflops
-from src.config import ExperimentConfig, LossConfig, PIPELINE_VERSION
+from src.config import PIPELINE_VERSION, ExperimentConfig, LossConfig
 from src.data.data_workspace import DataWorkspace
 from src.eval.diagnostics import EvaluationReport
 from src.eval.protocol import EvaluationProtocol
@@ -28,8 +30,10 @@ from src.training.builders import (
     build_scheduler,
     configure_memory_format,
 )
+from src.training.distributed import TrainingRuntime
 from src.training.metric import AICResult
 from src.training.runs import Run
+from src.training.sampling import DistributedBatchSampler
 from src.training.transfer import BatchTransfer
 from src.training.validation import validate
 
@@ -54,26 +58,45 @@ class TrainingState:
 
 
 class ExperimentRunner:
-    def __init__(self, config: ExperimentConfig, *, arm: str = "baseline") -> None:
+    def __init__(self, config: ExperimentConfig, *, arm: str = "baseline", runtime=None) -> None:
         self.config = config
         self.arm = arm
-        self.device = torch.device(config.train.device)
+        self.runtime = runtime
+        self.device = runtime.device if runtime is not None else torch.device(config.train.device)
         self.amp = build_amp(config.train, self.device)
         self.data_workspace = DataWorkspace(config.paths.data_path)
 
     def run(self) -> Run:
+        if self.runtime is None:
+            if int(os.environ.get('WORLD_SIZE', '1')) > 1:
+                raise ValueError('Use python -m src.training with train.devices; '
+                                 'external torchrun launch is not supported')
+            devices = TrainingRuntime.selected_devices(self.config.train)
+            if len(devices) > 1:
+                return TrainingRuntime.launch(self.config, self.arm, devices)
+            self.device = torch.device(f'cuda:{devices[0]}') if devices else self.device
+            if self.device.type == 'cuda':
+                torch.cuda.set_device(self.device)
+            self.amp = build_amp(self.config.train, self.device)
+            self.runtime = TrainingRuntime(self.device)
+        return self._run()
+
+    def _run(self) -> Run:
         cfg = self.config
+        runtime = self.runtime
         self._check_resume_protocol()
         ConsoleProgress.info(f"Эксперимент {cfg.paths.run_name}: device={self.device}, amp={cfg.train.amp}, seed={cfg.seed}")
         set_random_seed(cfg.seed)
 
         ConsoleProgress.info("Подготовка метаданных и train/val разбиения")
-        train_df, val_df = self._split_data()
+        train_df, val_df = runtime.main_call(self._split_data)
         ConsoleProgress.info(f"Разбиение готово: train={len(train_df)}, val={len(val_df)}; создание датасетов и аугментаций")
         train_ds, val_ds = build_datasets(cfg, self.data_workspace, train_df, val_df)
+        if runtime.distributed:
+            train_ds.seed = cfg.seed + runtime.rank
         model = self._build_training_model()
         ConsoleProgress.info("Модель готова; подсчёт GFLOPS")
-        gflops = count_gflops(model, cfg.dataset.image_size,
+        gflops = runtime.main_call(count_gflops, model, cfg.dataset.image_size,
                              use_valid_mask=cfg.dataset.resize_mode == "letterbox",
                              native_size=(1024, 1024) if cfg.model.forensic_mode == "jpeg" else None)
         if cfg.model.forensic_mode == "jpeg":
@@ -81,32 +104,48 @@ class ExperimentRunner:
         ConsoleProgress.info(f"Подсчёт завершён: {gflops:.2f} GFLOPS; создание оптимизатора")
         optimizer = build_optimizer(cfg.train, model)
         ConsoleProgress.info(f"Создание DataLoader: batch_size={cfg.train.batch_size}, workers={cfg.train.workers}")
-        train_loader, val_loader = build_loaders(cfg.train, train_ds, val_ds)
+        train_loader, val_loader = build_loaders(cfg.train, train_ds, val_ds, runtime=runtime)
         self._isolate_loader_rng(train_loader, val_loader)
 
         ConsoleProgress.info(f"DataLoader готовы: train={len(train_loader)} батчей, val={len(val_loader)}; настройка scheduler, AMP scaler и EMA")
         steps_per_epoch = math.ceil(len(train_loader) / cfg.train.accum_steps)
         scheduler_kwargs = {}
         if cfg.train.full_train_epochs:
-            scheduler_kwargs['full_steps_per_epoch'] = math.ceil(
-                math.ceil(len(train_ds) / cfg.train.batch_size) / cfg.train.accum_steps)
+            full_batches = (DistributedBatchSampler.batch_count(
+                len(train_ds), cfg.train.batch_size, runtime.world_size, False)
+                if runtime.distributed else math.ceil(len(train_ds) / cfg.train.batch_size))
+            scheduler_kwargs['full_steps_per_epoch'] = math.ceil(full_batches / cfg.train.accum_steps)
         scheduler = build_scheduler(cfg.train, optimizer, steps_per_epoch, **scheduler_kwargs)
         scaler = self.amp.scaler()
         ema = build_ema(cfg.train, model)
 
         ConsoleProgress.info("Создание папки эксперимента и сохранение конфигурации")
-        run = Run.create(cfg.paths.runs_path, cfg.paths.run_name, resume=cfg.train.resume)
         plain_config = cfg.to_flat_dict()
+        plain_config['world_size'] = runtime.world_size
         protocol = EvaluationProtocol.load(cfg.dataset.protocol_path)
         plain_config.update(protocol.provenance())
-        train_df.to_parquet(run.dir / 'training_rows.parquet', index=False)
-        val_df.to_parquet(run.dir / 'development_rows.parquet', index=False)
-        run.save_summary({'evaluation_role': 'development', 'protocol_digest': protocol.digest,
-                          'holdout_evaluated': False, 'training_complete': False})
-        run.save_snapshot(self._snapshot(plain_config, gflops))
-        run.info(f"{cfg.paths.run_name}, {gflops} GFLOPS")
+        run = None
 
-        run.info(f"Результаты: {run.dir.resolve()}; проверка возобновления обучения")
+        def prepare_run():
+            nonlocal run
+            run = Run.create(cfg.paths.runs_path, cfg.paths.run_name, resume=cfg.train.resume)
+            train_df.to_parquet(run.dir / 'training_rows.parquet', index=False)
+            val_df.to_parquet(run.dir / 'development_rows.parquet', index=False)
+            run.save_summary({'evaluation_role': 'development', 'protocol_digest': protocol.digest,
+                              'holdout_evaluated': False, 'training_complete': False})
+            run.save_snapshot(self._snapshot(plain_config, gflops))
+            run.info(f"{cfg.paths.run_name}, {gflops} GFLOPS; GPUs={runtime.world_size}, "
+                     f"effective batch={cfg.train.batch_size * cfg.train.accum_steps * runtime.world_size}")
+            return str(run.dir)
+
+        run_path = runtime.main_call(prepare_run)
+        if run is None:
+            run = Run.open(run_path)
+
+        if runtime.is_main:
+            run.info(f"Результаты: {run.dir.resolve()}; проверка возобновления обучения")
+        if runtime.distributed:
+            set_random_seed(cfg.seed + runtime.rank)
         state = self._resume_if_needed(
             run=run,
             model=model,
@@ -115,27 +154,37 @@ class ExperimentRunner:
             scheduler=scheduler,
             scaler=scaler,
         )
+        training_model = runtime.wrap(model)
+        runtime.synchronize_buffers(ema.module)
+        if runtime.is_main and runtime.cpu_collectives:
+            run.info('Gloo: GPU вычисления, обмен градиентами через CPU')
 
         try:
             for epoch in range(state.start_epoch, cfg.train.epochs):
                 train_ds.set_epoch(epoch)
                 train_ds.augmentations.set_epoch(epoch)
-                if cfg.train.full_train_epochs:
+                if runtime.distributed:
+                    train_loader.batch_sampler.set_epoch(epoch, seed=cfg.seed)
+                    steps_per_epoch = math.ceil(len(train_loader) / cfg.train.accum_steps)
+                elif cfg.train.full_train_epochs:
                     train_loader.sampler.set_epoch(epoch)
                     steps_per_epoch = math.ceil(len(train_loader) / cfg.train.accum_steps)
-                train_loader.sampler.generator = torch.Generator().manual_seed(cfg.seed + epoch)
+                if not runtime.distributed:
+                    train_loader.sampler.generator = torch.Generator().manual_seed(cfg.seed + epoch)
                 started = time.time()
                 if state.pending_train_result is not None:
                     train_result = state.pending_train_result
                     started -= state.train_elapsed_s
-                    run.info(f"Эпоха {epoch + 1}: обучение уже сохранено; повторяю только валидацию")
+                    if runtime.is_main:
+                        run.info(f"Эпоха {epoch + 1}: обучение уже сохранено; повторяю только валидацию")
                 else:
-                    run.info(f"Полные кадры: p={train_ds.augmentations.full_frame_probability:.2f}; "
+                    if runtime.is_main:
+                        run.info(f"Полные кадры: p={train_ds.augmentations.full_frame_probability:.2f}; "
                              "валидация: original")
-                    run.info(f"Эпоха {epoch + 1}/{cfg.train.epochs}: обучение; "
-                             f"показов={len(train_loader.sampler)}, optimizer steps={steps_per_epoch}")
+                        run.info(f"Эпоха {epoch + 1}/{cfg.train.epochs}: обучение; "
+                                 f"optimizer steps={steps_per_epoch}")
                     train_result = train_one_epoch(
-                        model=model,
+                        model=training_model,
                         loader=train_loader,
                         optimizer=optimizer,
                         scheduler=scheduler,
@@ -144,69 +193,83 @@ class ExperimentRunner:
                         amp=self.amp,
                         config=cfg,
                         device=self.device,
+                        runtime=runtime,
                     )
                     state.seen_total += train_result.seen
                     state.pending_train_result = train_result
                     state.train_elapsed_s = time.time() - started
                     # Commit training before any post-training output or validation.
-                    self._save_training_checkpoint(
+                    self._checkpoint(
                         run, model, ema, optimizer, scheduler, scaler, epoch, state, plain_config,
                         validation_complete=False,
                     )
-                run.info(f"Обучение завершено: loss={train_result.loss:.5f}, примеров={train_result.seen}; валидация EMA")
-                validation = validate(ema.module, val_loader, self.amp, cfg, self.device)
-                tuned = validation.tuned
+                validation = None
+
+                def evaluate(train_result, validation_model, loader):
+                    nonlocal validation
+                    run.info(f"Обучение завершено: loss={train_result.loss:.5f}, примеров={train_result.seen}; валидация EMA")
+                    validation = validate(validation_model, loader, self.amp, cfg, self.device)
+                    return validation.tuned
+
+                tuned = runtime.main_call(evaluate, train_result, ema.module, val_loader)
 
                 if tuned.aic > state.best_aic:
                     state.best_aic = tuned.aic
                     state.best_result = tuned
-                    run.save_state(
-                        {
-                            "model": model.state_dict(),
-                            "ema": ema.module.state_dict(),
-                            "ema_n_averaged": int(ema.n_averaged),
-                            "epoch": epoch,
-                            "samples": state.seen_total,
-                            "best_aic": state.best_aic,
-                            "operating_point": tuned.as_dict(),
-                            "cfg": plain_config,
-                        },
-                        "best.pt",
-                    )
-                    run.info("Сохранение OOF-предсказаний, строк валидации и метрик")
-                    run.save_eval(validation, val_df)
-                    report = EvaluationReport(validation.accumulator, val_df, tuned)
-                    report.save(run.dir / 'development')
-                    run.save_summary({'development': report.summary()})
-                    run.info(f"  новый лучший AIC {state.best_aic:.4f} -> ckpt/best.pt")
+                    runtime.main_call(self._save_best,
+                                      run, model, ema, epoch, state, tuned, plain_config, validation, val_df)
 
-                self._save_training_checkpoint(
+                self._checkpoint(
                     run, model, ema, optimizer, scheduler, scaler, epoch, state, plain_config,
                     validation_complete=True,
                 )
                 state.pending_train_result = None
-                self._log_epoch(
-                    run=run,
-                    epoch=epoch,
-                    model=model,
-                    train_result=train_result,
-                    tuned=tuned,
-                    seen_total=state.seen_total,
-                    started=started,
-                    steps_per_epoch=steps_per_epoch,
-                    optimizer=optimizer,
-                    validation=validation,
+                runtime.main_call(self._log_epoch,
+                    run=run, epoch=epoch, model=model, train_result=train_result,
+                    tuned=tuned, seen_total=state.seen_total, started=started,
+                    steps_per_epoch=steps_per_epoch, optimizer=optimizer, validation=validation,
                 )
 
-            run.info("Сохранение итоговой сводки")
-            self._save_final_summary(run, state, gflops)
-            run.info(f"Эксперимент завершён: лучший AIC={state.best_aic:.4f}; результаты в {run.dir.resolve()}")
+            runtime.main_call(self._save_final_summary, run, state, gflops)
+            if runtime.is_main:
+                run.info(f"Эксперимент завершён: лучший AIC={state.best_aic:.4f}; результаты в {run.dir.resolve()}")
             return run
         finally:
-            run.close()
-            del model, ema, optimizer, val_loader, train_loader, scaler
+            if runtime.is_main:
+                run.close()
+            del training_model, model, ema, optimizer, val_loader, train_loader, scaler
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
+
+    @staticmethod
+    def _save_best(run, model, ema, epoch, state, tuned, plain_config, validation, val_df):
+        run.save_state({
+            "model": model.state_dict(),
+            "ema": ema.module.state_dict(),
+            "ema_n_averaged": int(ema.n_averaged),
+            "epoch": epoch,
+            "samples": state.seen_total,
+            "best_aic": state.best_aic,
+            "operating_point": tuned.as_dict(),
+            "cfg": plain_config,
+        }, "best.pt")
+        run.info("Сохранение OOF-предсказаний, строк валидации и метрик")
+        run.save_eval(validation, val_df)
+        report = EvaluationReport(validation.accumulator, val_df, tuned)
+        report.save(run.dir / 'development')
+        run.save_summary({'development': report.summary()})
+        run.info(f"  новый лучший AIC {state.best_aic:.4f} -> ckpt/best.pt")
+
+    def _checkpoint(self, run, model, ema, optimizer, scheduler, scaler, epoch, state,
+                    plain_config, *, validation_complete):
+        runtime = self.runtime
+        rng_states = (runtime.gather_objects(TorchRNGState.capture())
+                      if self.config.model.forensic_contrastive_dim and runtime.distributed else None)
+        runtime.synchronize_buffers(model)
+        runtime.synchronize_buffers(ema.module)
+        runtime.main_call(self._save_training_checkpoint,
+            run, model, ema, optimizer, scheduler, scaler, epoch, state, plain_config,
+            validation_complete=validation_complete, rng_states=rng_states)
 
     def _isolate_loader_rng(self, train_loader, val_loader):
         if self.config.model.forensic_contrastive_dim:
@@ -217,9 +280,10 @@ class ExperimentRunner:
 
     @staticmethod
     def _save_training_checkpoint(run, model, ema, optimizer, scheduler, scaler,
-                                  epoch, state, plain_config, *, validation_complete):
+                                  epoch, state, plain_config, *, validation_complete, rng_states=None):
         """Atomic training commit; validation artifacts are a separate phase."""
         run.save_state({
+            **({'rank_rng_states': rng_states} if rng_states is not None else {}),
             **({'torch_rng_state': TorchRNGState.capture()}
                if plain_config.get('forensic_contrastive_dim', 0) else {}),
             'model': model.state_dict(),
@@ -270,6 +334,9 @@ class ExperimentRunner:
         if (run_dir / 'holdout_claim.json').exists():
             raise ValueError('Cannot resume a run after holdout evaluation was claimed; choose a new run_name')
         snapshot = Run.open(run_dir).snapshot
+        world_size = self.runtime.world_size if self.runtime is not None else 1
+        if snapshot.get('world_size', 1) != world_size:
+            raise ValueError('Cannot resume with a different world_size; use finetune_from in a new run')
         if snapshot.get('pipeline_version') != PIPELINE_VERSION:
             raise ValueError('Cannot resume a historical pipeline; choose a new run_name')
         current = cfg.to_flat_dict()
@@ -354,7 +421,11 @@ class ExperimentRunner:
         if saved.get("scaler"):
             scaler.load_state_dict(saved["scaler"])
         if cfg.model.forensic_contrastive_dim and 'torch_rng_state' in saved:
-            TorchRNGState.restore(saved['torch_rng_state'])
+            rng = saved['torch_rng_state']
+            if 'rank_rng_states' in saved:
+                rank = self.runtime.rank if self.runtime is not None else 0
+                rng = saved['rank_rng_states'][rank]
+            TorchRNGState.restore(rng)
 
         saved_epoch = int(saved["epoch"])
         state.seen_total = int(
@@ -377,10 +448,11 @@ class ExperimentRunner:
             state.train_elapsed_s = float(saved.get('train_elapsed_s', 0.0))
         if best_result is not None:
             state.best_result = AICResult(**best_result)
-        run.info(
-            f"ПРОДОЛЖАЮ: эпоха {state.start_epoch} из {cfg.train.epochs}, "
-            f"показов {state.seen_total}, лучший AIC {state.best_aic:.4f}"
-        )
+        if self.runtime is None or self.runtime.is_main:
+            run.info(
+                f"ПРОДОЛЖАЮ: эпоха {state.start_epoch} из {cfg.train.epochs}, "
+                f"показов {state.seen_total}, лучший AIC {state.best_aic:.4f}"
+            )
         return state
 
     def _log_epoch(
@@ -469,7 +541,9 @@ def train_one_epoch(
     device: torch.device,
     profiler=None,
     asynchronous_transfer=True,
+    runtime=None,
 ) -> EpochTrainResult:
+    runtime = runtime or TrainingRuntime(device)
     model.train()
     skipped_steps = 0
     meter = LossMeter()
@@ -482,9 +556,10 @@ def train_one_epoch(
     optimizer.zero_grad(set_to_none=True)
     transfer = BatchTransfer(device, asynchronous=asynchronous_transfer)
 
-    for step, batch in enumerate(ConsoleProgress.iterate(
+    progress = ConsoleProgress.iterate(
         loader, "Обучение, батчи", image_count=lambda batch: len(batch["image"]), measure_wait=True
-    )):
+    ) if runtime.is_main else loader
+    for step, batch in enumerate(progress):
         if profiler is not None:
             profiler.begin(step)
         batch = transfer(batch)
@@ -492,38 +567,44 @@ def train_one_epoch(
         if profiler is not None:
             profiler.mark()
 
-        with amp.autocast():
-            model_kwargs = {"valid_mask": batch["valid_mask"]} if "valid_mask" in batch else {}
-            if 'jpeg' in batch:
-                model_kwargs['jpeg'] = batch['jpeg']
-            if 'local_input' in batch:
-                model_kwargs['local_input'] = batch['local_input']
-            if 'native_rgb' in batch:
-                model_kwargs['native_rgb'] = batch['native_rgb']
-            loss_result = criterion(
-                model(images, batch.get("fmap"), **model_kwargs),
-                batch,
-            )
-
-        if profiler is not None:
-            profiler.mark()
-        loss = loss_result.total
-        if config.train.full_train_epochs:
-            accumulation_samples += len(images)
-            scaler.scale(loss * len(images)).backward()
-        else:
-            scaler.scale(loss / config.train.accum_steps).backward()
-        if profiler is not None:
-            profiler.mark()
         is_accum_boundary = (step + 1) % config.train.accum_steps == 0
         is_last_batch = total_batches is not None and (step + 1) == total_batches
+        runtime.before_forward(model)
+        sync = (model.no_sync() if runtime.distributed and not runtime.cpu_collectives
+                and not (is_accum_boundary or is_last_batch)
+                else nullcontext())
+        with sync:
+            with amp.autocast():
+                model_kwargs = {"valid_mask": batch["valid_mask"]} if "valid_mask" in batch else {}
+                if 'jpeg' in batch:
+                    model_kwargs['jpeg'] = batch['jpeg']
+                if 'local_input' in batch:
+                    model_kwargs['local_input'] = batch['local_input']
+                if 'native_rgb' in batch:
+                    model_kwargs['native_rgb'] = batch['native_rgb']
+                loss_result = criterion(
+                    model(images, batch.get("fmap"), **model_kwargs),
+                    batch,
+                )
+            if profiler is not None:
+                profiler.mark()
+            loss = loss_result.total
+            if config.train.full_train_epochs or runtime.distributed:
+                accumulation_samples += len(images)
+                scaler.scale(loss * len(images)).backward()
+            else:
+                scaler.scale(loss / config.train.accum_steps).backward()
+        if profiler is not None:
+            profiler.mark()
         if is_accum_boundary or is_last_batch:
-            if config.train.grad_clip or config.train.full_train_epochs:
+            runtime.synchronize_gradients()
+            if config.train.grad_clip or config.train.full_train_epochs or runtime.distributed:
                 scaler.unscale_(optimizer)
-            if config.train.full_train_epochs:
+            if config.train.full_train_epochs or runtime.distributed:
+                divisor = runtime.sum(accumulation_samples) / runtime.world_size
                 for parameter in model.parameters():
                     if parameter.grad is not None:
-                        parameter.grad.div_(accumulation_samples)
+                        parameter.grad.div_(divisor)
                 accumulation_samples = 0
             if config.train.grad_clip:
                 nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip)
@@ -535,7 +616,7 @@ def train_one_epoch(
         if profiler is not None:
             profiler.mark()
         if is_accum_boundary or is_last_batch:
-            ema.update_parameters(model)
+            ema.update_parameters(runtime.unwrap(model))
             scheduler.step()
         if profiler is not None:
             profiler.mark()
@@ -548,13 +629,15 @@ def train_one_epoch(
             profiler.mark()
             profiler.end(is_accum_boundary or is_last_batch)
 
+    runtime.reduce_meter(meter)
+    seen, negative_count = runtime.sum([seen, float(negatives)]).tolist()
     components = meter.compute()
     return EpochTrainResult(
         loss=components.get("total", 0.0),
         loss_components=components,
         skipped_steps=skipped_steps,
-        seen=seen,
-        negative_fraction=float(negatives) / max(1, seen),
+        seen=int(seen),
+        negative_fraction=negative_count / max(1, seen),
     )
 
 

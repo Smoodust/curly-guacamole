@@ -18,7 +18,7 @@ from src.data.augmentation.pipeline import AugmentationPipeline
 from src.data.collation import ValidationCollator
 from src.data.data_workspace import DataWorkspace
 from src.data.dataset import AIIJCDataset
-from src.training.sampling import FinalFullTrainSampler, UniformMaskAreaSampler
+from src.training.sampling import DistributedBatchSampler, FinalFullTrainSampler, UniformMaskAreaSampler
 
 if TYPE_CHECKING:
     from src.modules.segmenter import Segmenter
@@ -193,6 +193,8 @@ def build_loaders(
     config: TrainConfig,
     train_ds: AIIJCDataset,
     val_ds: AIIJCDataset,
+    *,
+    runtime=None,
 ) -> tuple[DataLoader, DataLoader]:
     DataLoaderThreadLimits.apply()
     pin_memory = torch.device(config.device).type == "cuda"
@@ -206,14 +208,18 @@ def build_loaders(
     sampler = build_sampler(config, train_ds)
     if config.full_train_epochs:
         sampler = FinalFullTrainSampler(sampler, len(train_ds), config.epochs - config.full_train_epochs)
+    batching = dict(batch_size=config.batch_size, sampler=sampler,
+                    drop_last=not bool(config.full_train_epochs))
+    if runtime is not None and runtime.distributed:
+        batching = dict(batch_sampler=DistributedBatchSampler(
+            sampler, config.batch_size, runtime.rank, runtime.world_size,
+            drop_last=not bool(config.full_train_epochs)))
     train_loader = DataLoader(
         train_ds,
-        batch_size=config.batch_size,
-        sampler=sampler,
+        **batching,
         collate_fn=ValidationCollator() if (getattr(train_ds, 'luma_image_size', 0)
                                            or getattr(train_ds, 'wavelet_image_size', 0)
                                            or getattr(train_ds, 'forensic_mode', 'maps') == 'jpeg') else None,
-        drop_last=not bool(config.full_train_epochs),
         num_workers=config.workers,
         pin_memory=pin_memory,
         persistent_workers=config.workers > 0,

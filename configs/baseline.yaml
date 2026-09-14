@@ -28,6 +28,8 @@ dataset:
 train:
   # Hardware defaults; AIIJC_* environment variables can override these.
   device: cuda
+  devices: auto
+  distributed_backend: auto
   workers: 10
   encoder_lr: 0.0001
   fmap_lr: 0.0003

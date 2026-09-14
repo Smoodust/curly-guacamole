@@ -7,7 +7,7 @@ from src.config import ExperimentConfig, load_experiment_config
 @pytest.fixture
 def recipe(tmp_path, monkeypatch):
     monkeypatch.setattr(global_config, 'PROJECT_ROOT', tmp_path)
-    for key in ('BATCH_SIZE', 'ACCUM_STEPS', 'AMP', 'DEVICE', 'WORKERS'):
+    for key in ('BATCH_SIZE', 'ACCUM_STEPS', 'AMP', 'DEVICE', 'WORKERS', 'DEVICES', 'DISTRIBUTED_BACKEND'):
         monkeypatch.delenv('AIIJC_' + key, raising=False)
     path = tmp_path / 'baseline.yaml'
     path.write_text('paths: {run_name: baseline}\ntrain: {batch_size: 4}\n')
@@ -31,6 +31,22 @@ def test_runtime_precedence_and_snapshot_preservation(recipe, monkeypatch):
 
 def test_unset_runtime_preserves_recipe(recipe):
     assert load_experiment_config(recipe).train.batch_size == 4
+
+
+def test_runtime_devices_precedence(recipe, monkeypatch):
+    recipe.with_name('.env').write_text('AIIJC_DEVICES="[0, 1]"\nAIIJC_DISTRIBUTED_BACKEND=gloo\n')
+    assert load_experiment_config(recipe).train.devices == (0, 1)
+    monkeypatch.setenv('AIIJC_DEVICES', '[1, 2]')
+    config = load_experiment_config(recipe)
+    assert config.train.devices == (1, 2)
+    assert config.train.distributed_backend == 'gloo'
+    assert ExperimentConfig.from_dict(config.to_dict()).train.devices == (1, 2)
+
+
+def test_malformed_devices_environment_is_value_error(recipe, monkeypatch):
+    monkeypatch.setenv('AIIJC_DEVICES', '[0, 1')
+    with pytest.raises(ValueError, match='AIIJC_DEVICES'):
+        load_experiment_config(recipe)
 
 
 @pytest.mark.parametrize('flat', [False, True])

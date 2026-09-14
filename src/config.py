@@ -184,6 +184,8 @@ class DatasetConfig(ConfigSection):
 @dataclass(frozen=True)
 class TrainConfig(ConfigSection):
     device: str = 'cuda'
+    devices: str | tuple[int, ...] = 'auto'
+    distributed_backend: str = 'auto'
     workers: int = 10
     encoder_lr: float = 1e-4
     fmap_lr: float = 3e-4
@@ -209,6 +211,16 @@ class TrainConfig(ConfigSection):
         self.validate()
 
     def validate(self):
+        if self.devices != 'auto':
+            if (not isinstance(self.devices, (list, tuple)) or not self.devices
+                    or any(type(index) is not int or index < 0 for index in self.devices)
+                    or len(set(self.devices)) != len(self.devices)):
+                raise ValueError('train.devices must be auto or a nonempty list of unique GPU indices')
+            object.__setattr__(self, 'devices', tuple(self.devices))
+            if self.device != 'cuda':
+                raise ValueError('Explicit train.devices requires train.device=cuda')
+        if self.distributed_backend not in {'auto', 'nccl', 'gloo'}:
+            raise ValueError('train.distributed_backend must be auto, nccl or gloo')
         if not isinstance(self.device, str) or not (self.device in {'cpu', 'mps'} or self.device.startswith('cuda')):
             raise ValueError("train.device must be 'cpu', 'mps', 'cuda' or 'cuda:<index>'")
         for name in ('epochs', 'epoch_size', 'batch_size', 'accum_steps'):
@@ -386,7 +398,8 @@ class RuntimeEnvironment:
     """Machine overrides for recipes; snapshot deserialization stays unchanged."""
 
     FIELDS = {'batch_size': int, 'accum_steps': int, 'amp': str,
-              'device': str, 'workers': int}
+              'device': str, 'workers': int, 'devices': yaml.safe_load,
+              'distributed_backend': str}
 
     def apply(self, data):
         settings = {**dotenv_values(global_config.PROJECT_ROOT / '.env'), **os.environ}
@@ -398,7 +411,7 @@ class RuntimeEnvironment:
                 continue
             try:
                 train[name] = cast(value.strip())
-            except ValueError as exc:
+            except (ValueError, yaml.YAMLError) as exc:
                 raise ValueError(f'{key} must be a valid {cast.__name__}') from exc
         return {**data, 'train': train}
 
