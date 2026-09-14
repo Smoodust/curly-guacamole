@@ -68,7 +68,12 @@ class TrainingRuntime:
             raise ValueError(f'Distributed backend {backend} is unavailable in this PyTorch build')
         return backend
 
+    def validate_sync_batchnorm(self, enabled):
+        if enabled and self.distributed and (self.device.type != 'cuda' or dist.get_backend() != 'nccl'):
+            raise ValueError('Multi-GPU SyncBatchNorm requires CUDA with NCCL; Gloo is unsupported')
+
     def wrap(self, model):
+        self.validate_sync_batchnorm(any(isinstance(module, torch.nn.SyncBatchNorm) for module in model.modules()))
         if not self.distributed:
             return model
         if self.cpu_collectives:

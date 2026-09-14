@@ -1,5 +1,45 @@
 # Сравнение forensic-веток при RGB 576
 
+## Эксперимент jpeg640_pretrained_syncbn
+
+`configs/jpeg640_pretrained_syncbn.yaml` наследует `jpeg640_pretrained` и включает
+`model.sync_batchnorm: true`. RGB остаётся 640, aux=0.4, weighted validation=1.6;
+loss, sampling, расписание, lookup и остальные настройки совпадают с родителем.
+Существующие конфиги по умолчанию используют `sync_batchnorm: false`.
+
+BatchNorm в encoder/decoder/fusion заменяется на SyncBatchNorm при сборке модели,
+до создания optimizer и EMA. JPEG-ветка сохраняет покадровую нормализацию.
+Статистики fusion учитывают только изображения с доступным JPEG. Процесс без
+JPEG участвует в обмене пустыми тензорами и в backward; когда JPEG нет нигде,
+fusion пропускается на всех процессах. Для безопасного обмена с пустыми входами
+BF16/FP16 fusion SyncBN использует FP32 внутри синхронизированного forward,
+возвращая исходный dtype выходу. Running statistics и параметры сохраняются
+под прежними именами, поэтому inference не требует нескольких GPU.
+
+На нескольких GPU требуется CUDA/NCCL. Неподдерживаемые CPU/Gloo-конфигурации
+останавливаются с явной ошибкой. На одном устройстве работает обычное поведение
+BatchNorm. Для сопоставимости `1×16` и `2×8` держите одинаковым
+`train.batch_size × число GPU`; accumulation не объединяет статистики BN между
+forward-проходами. Общий forward batch выводится в train.log. SyncBN не обещает
+побитовой идентичности обучения при разных аугментациях/порядке данных.
+
+Смена sync_batchnorm при resume запрещена: используйте новый run_name.
+Обучение не запускалось. Локально проверены CPU и один RTX 3070, сохранение
+checkpoint-структуры, совпадение eval с BN, backward и шаг optimizer, обработка
+пустых/смешанных JPEG-батчей и типы AMP-обмена. На этой машине нет двух GPU/NCCL,
+поэтому реальный распределённый тест пропущен. На сервере его можно запустить:
+
+```bash
+python -m pytest tests/test_sync_batchnorm.py -k two_gpu -v
+```
+
+Он проверяет общий batch против обычного BN, BF16 fusion с разной доступностью
+JPEG по процессам и backward полной модели с JPEG только на одном GPU.
+GFLOPs eval прежние: 91.230238 при native 1024² и 93.035673 при Full HD.
+Коммуникационные затраты SyncBN в эти FLOPs не входят.
+
+В `notebooks/train.ipynb` выберите `experiment = 'jpeg640_pretrained_syncbn'`.
+
 ## Lookup-оптимизация и эксперимент RGB 640 (14 сентября 2026)
 
 Текущий `JPEGArtifactModule` принимает категории напрямую. `JPEGCategoryConv2d`

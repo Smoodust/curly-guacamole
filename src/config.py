@@ -66,6 +66,7 @@ class ModelConfig(ConfigSection):
     forensic_channels: tuple[int, ...] = (64, 96, 128)
     aux_weight: float = 0.4
     norm: str = 'batch'
+    sync_batchnorm: bool = False
     use_forensics: bool = True
     forensic_mode: str = 'maps'
     jpeg_pretrained: str | None = None
@@ -126,6 +127,8 @@ class ModelConfig(ConfigSection):
             raise ValueError('model.forensic_channels must contain three positive integers')
         if self.norm not in {'batch', 'group'}:
             raise ValueError("model.norm must be 'batch' or 'group'")
+        if type(self.sync_batchnorm) is not bool:
+            raise ValueError('model.sync_batchnorm must be boolean')
         if type(self.use_forensics) is not bool:
             raise ValueError('model.use_forensics must be boolean')
         for name in ('aux_weight', 'dct_aux_weight'):

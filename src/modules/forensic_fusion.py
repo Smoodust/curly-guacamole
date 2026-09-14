@@ -48,6 +48,7 @@ class ForensicFusion(nn.Module):
 
         self.encoder_strides = encoder_strides
         self.forensic_mode = forensic_mode
+        self.sync_batchnorm = False
 
         self.branch = JPEGBranch(forensic_channels, variant=jpeg_variant) if forensic_mode == 'jpeg' else ForensicBranch(
             in_ch=CHANNEL_COUNT,
@@ -93,14 +94,40 @@ class ForensicFusion(nn.Module):
         return value.new_zeros((batch_size, *value.shape[1:])).index_copy(
             0, torch.as_tensor(indices, device=value.device), value)
 
-    def _forward(self, encoder_features, forensic_map, *, jpeg, return_aux, contrastive):
+    def _global_jpeg_available(self, count, reference):
+        if not (self.sync_batchnorm and self.training and torch.distributed.is_initialized()
+                and torch.distributed.get_world_size() > 1):
+            return False
+        available = reference.new_tensor(int(count > 0), dtype=torch.int32)
+        torch.distributed.all_reduce(available, op=torch.distributed.ReduceOp.MAX)
+        return bool(available.item())
+
+    def _empty_fusion(self, encoder_features):
+        """Join SyncBN forward/backward with zero samples on a JPEG-empty rank."""
+        result = list(encoder_features)
+        for stride in self.fusion_strides:
+            index = self.encoder_strides.index(stride)
+            feature = encoder_features[index]
+            empty_aux = feature.new_empty((0, self.branch.channels_by_stride[stride], *feature.shape[-2:]))
+            empty_result = self.fusion_blocks[str(stride)](feature[:0], empty_aux)
+            # Keep the empty result in the loss graph, so this rank also joins
+            # the SyncBN backward collectives. The sum is exactly zero.
+            result[index] = feature + empty_result.sum()
+        return result
+
+    def _forward(self, encoder_features, forensic_map, *, jpeg, return_aux, contrastive,
+                 global_jpeg_available=None):
         embeddings, availability = None, None
         reference = encoder_features[self.encoder_strides.index(8)]
         if contrastive:
             availability = torch.ones(reference.shape[0], dtype=torch.bool, device=reference.device)
         if self.forensic_mode == 'jpeg':
             available = [i for i, sample in enumerate(jpeg) if sample.get('available', True)]
+            if global_jpeg_available is None:
+                global_jpeg_available = self._global_jpeg_available(len(available), reference)
             if not available:
+                if global_jpeg_available:
+                    encoder_features = self._empty_fusion(encoder_features)
                 if contrastive:
                     availability.zero_()
                     # The single-device trainer tolerates unused branch parameters.
@@ -112,7 +139,8 @@ class ForensicFusion(nn.Module):
                 # Exclude PNG samples from the branch and fusion BatchNorm too.
                 subset = [feature[available] for feature in encoder_features]
                 subset_result = self._forward(subset, None, return_aux=return_aux,
-                                              jpeg=[jpeg[i] for i in available], contrastive=contrastive)
+                                              jpeg=[jpeg[i] for i in available], contrastive=contrastive,
+                                              global_jpeg_available=global_jpeg_available)
                 result = [feature.clone() for feature in encoder_features]
                 for original, updated in zip(result, subset_result.features, strict=True):
                     original[available] = updated

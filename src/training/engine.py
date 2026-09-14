@@ -84,6 +84,7 @@ class ExperimentRunner:
     def _run(self) -> Run:
         cfg = self.config
         runtime = self.runtime
+        runtime.validate_sync_batchnorm(cfg.model.sync_batchnorm)
         self._check_resume_protocol()
         ConsoleProgress.info(f"Эксперимент {cfg.paths.run_name}: device={self.device}, amp={cfg.train.amp}, seed={cfg.seed}")
         set_random_seed(cfg.seed)
@@ -136,6 +137,9 @@ class ExperimentRunner:
             run.save_snapshot(self._snapshot(plain_config, gflops))
             run.info(f"{cfg.paths.run_name}, {gflops} GFLOPS; GPUs={runtime.world_size}, "
                      f"effective batch={cfg.train.batch_size * cfg.train.accum_steps * runtime.world_size}")
+            if cfg.model.sync_batchnorm:
+                run.info(f'SyncBN: encoder/decoder/fusion, global forward batch up to '
+                         f'{cfg.train.batch_size * runtime.world_size}; JPEG branch keeps per-frame normalization')
             return str(run.dir)
 
         run_path = runtime.main_call(prepare_run)
@@ -336,6 +340,9 @@ class ExperimentRunner:
             raise ValueError('Cannot resume a historical pipeline; choose a new run_name')
         current = cfg.to_flat_dict()
         saved_dataset = snapshot.get('dataset', snapshot)
+        saved_model = snapshot.get('model', snapshot)
+        if saved_model.get('sync_batchnorm', False) != cfg.model.sync_batchnorm:
+            raise ValueError('Cannot resume with a different model.sync_batchnorm; choose a new run_name')
         saved_train = snapshot.get('train', snapshot)
         saved_eval = snapshot.get('eval', snapshot)
         if saved_train.get('sampling_strategy', 'negative_fraction') != cfg.train.sampling_strategy:

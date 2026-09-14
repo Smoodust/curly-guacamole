@@ -96,6 +96,10 @@ def build_model(config: ModelConfig, *, pretrained: bool = True) -> Segmenter:
         if not path.is_absolute():
             path = global_config.PROJECT_ROOT / path
         model.forensic_fusion.branch.artifact.load_pretrained(path)
+    if config.sync_batchnorm:
+        from src.modules.sync_batchnorm import SynchronizedBatchNorm
+
+        model = SynchronizedBatchNorm.apply(model)
     return model
 
 
