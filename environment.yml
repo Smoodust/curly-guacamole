@@ -26,3 +26,6 @@ dependencies:
       - timm
       - torch
       - torchvision
+      # Fused JPEG category lookup (CPU uses the pure PyTorch implementation).
+      - triton; sys_platform == 'linux'
+      - triton-windows; sys_platform == 'win32'

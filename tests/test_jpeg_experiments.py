@@ -95,4 +95,6 @@ def test_recipe_roundtrip_and_native_flops(variant):
         ModelConfig(jpeg_variant=variant)
     with torch.device('meta'):
         model = build_model(config.model, pretrained=False)
-    assert 96.7 < count_gflops(model, 576, native_size=(1024, 1024)) < 100
+        baseline_model = build_model(base.model, pretrained=False)
+    baseline_flops = count_gflops(baseline_model, 576, native_size=(1024, 1024))
+    assert baseline_flops < count_gflops(model, 576, native_size=(1024, 1024)) < 75

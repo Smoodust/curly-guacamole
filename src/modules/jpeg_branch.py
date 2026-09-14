@@ -1,6 +1,7 @@
 """CAT-Net artifact stem followed by our lightweight forensic pyramid."""
 
 import logging
+from functools import lru_cache
 
 import numpy as np
 from numpy.core.multiarray import scalar as numpy_scalar
@@ -10,6 +11,19 @@ from torch.nn import functional as F
 
 from src.modules.dws_conv2d import DWSConv2d
 from src.modules.jpeg_experiments import SignedDCTProjector, SpatialFrequencyBlock, SubblockProjector
+
+
+@lru_cache(maxsize=1)
+def _cuda_category_conv():
+    try:
+        from src.modules.jpeg_lookup_cuda import CUDACategoryConv
+    except ModuleNotFoundError as error:
+        if error.name != 'triton':
+            raise
+        logging.getLogger(__name__).warning(
+            'Triton unavailable: JPEG lookup uses the slower PyTorch fallback on CUDA.')
+        return None
+    return CUDACategoryConv
 
 
 class JPEGFrameBatchNorm2d(nn.BatchNorm2d):
@@ -75,22 +89,56 @@ class JPEGPointwiseConv2d(nn.Conv2d):
             return _PointwiseConvWithoutCuDNN.apply(x, weight)
 
 
+class JPEGCategoryConv2d(nn.Conv2d):
+    """Evaluate the CAT-Net one-hot convolution by gathering category weights.
+
+    Keep the original Conv2d parameters for strict checkpoint compatibility.
+    BxHxW category inputs use lookup; Bx21xHxW dense inputs remain supported
+    for reference comparisons. Category 21 is reserved for zero padding.
+    """
+
+    def __init__(self):
+        super().__init__(21, 64, 3, dilation=8, padding=8)
+
+    def forward(self, bins):
+        if bins.ndim == 4:
+            return super().forward(bins)
+        batch, height, width = bins.shape
+        dtype = self.weight.dtype
+        if bins.device.type != 'meta' and torch.is_autocast_enabled(bins.device.type):
+            dtype = torch.get_autocast_dtype(bins.device.type)
+        weight, bias = self.weight.to(dtype), self.bias.to(dtype)
+        if bins.device.type == 'cuda' and dtype in (torch.float32, torch.float16, torch.bfloat16):
+            kernel = _cuda_category_conv()
+            if kernel is not None:
+                return kernel.apply(bins.contiguous(), weight.contiguous(), bias.contiguous())
+        indices = F.pad(bins.long(), (8, 8, 8, 8), value=21)
+        # Match convolution's low-precision inputs with FP32 accumulation.
+        if dtype in (torch.float16, torch.bfloat16):
+            weight, bias = weight.float(), bias.float()
+        result = bias[None, None, None, :].expand(batch, height, width, -1)
+        for row in range(3):
+            for col in range(3):
+                table = F.pad(weight[:, :, row, col].T, (0, 0, 0, 1))
+                neighbors = indices[:, row*8:row*8+height, col*8:col*8+width]
+                result = result + F.embedding(neighbors, table)
+        return result.to(dtype).permute(0, 3, 1, 2).contiguous()
+
+
 class JPEGArtifactModule(nn.Module):
     """Frequency-wise CAT-Net stem; input is min(abs(quantized Y DCT), 20)."""
 
     def __init__(self):
         super().__init__()
         self.dc_layer0_dil = nn.Sequential(
-            nn.Conv2d(21, 64, 3, dilation=8, padding=8),
+            JPEGCategoryConv2d(),
             nn.BatchNorm2d(64, momentum=0.01), nn.ReLU(inplace=True))
         self.dc_layer1_tail = nn.Sequential(
             JPEGPointwiseConv2d(),
             nn.BatchNorm2d(4, momentum=0.01), nn.ReLU(inplace=True))
 
     def forward(self, bins, qtable):
-        categories = torch.arange(21, device=bins.device, dtype=torch.uint8)[None, :, None, None]
-        volume = (bins[:, None] == categories).to(self.dc_layer0_dil[0].weight.dtype)
-        x = self.dc_layer1_tail(self.dc_layer0_dil(volume))
+        x = self.dc_layer1_tail(self.dc_layer0_dil(bins))
         b, c, h, w = x.shape
         frequencies = x.reshape(b, c, h//8, 8, w//8, 8).permute(0, 1, 3, 5, 2, 4)
         raw = frequencies.reshape(b, c*64, h//8, w//8)

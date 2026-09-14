@@ -171,8 +171,10 @@ def test_three_ablation_recipes_and_explicit_native_budget():
         model = build_model(configs[2].model, pretrained=False)
         with pytest.raises(ValueError, match='native_size'):
             count_gflops(model, 576)
-        assert count_gflops(model, 576, native_size=(1024, 1024)) < 100
-        assert count_gflops(model, 576, native_size=(1080, 1920)) > 100
+        small = count_gflops(model, 576, native_size=(1024, 1024))
+        large = count_gflops(model, 576, native_size=(1080, 1920))
+        assert small == pytest.approx(71.322273104)
+        assert small < large < 100
 
 
 @pytest.mark.parametrize('orientation', range(1, 9))
