@@ -84,6 +84,11 @@ class ExperimentRunner:
     def _run(self) -> Run:
         cfg = self.config
         runtime = self.runtime
+        if cfg.train.jpeg_pair_training and runtime.distributed:
+            raise ValueError('JPEG pair fine-tuning currently supports one GPU only')
+        if cfg.train.jpeg_pair_training:
+            ConsoleProgress.info('JPEG pairs: full frames without other augmentations; only JPEG branch trains; '
+                                 'frozen teacher, two student views per sampled row')
         runtime.validate_sync_batchnorm(cfg.model.sync_batchnorm)
         self._check_resume_protocol()
         ConsoleProgress.info(f"Эксперимент {cfg.paths.run_name}: device={self.device}, amp={cfg.train.amp}, seed={cfg.seed}")
@@ -313,6 +318,9 @@ class ExperimentRunner:
         model = build_model(cfg.model, pretrained=not (resume_available or finetune))
         if finetune:
             self._load_finetune_weights(model)
+        if cfg.train.jpeg_pair_training:
+            from src.training.jpeg_consistency import freeze_except_jpeg
+            freeze_except_jpeg(model)
         return configure_memory_format(model.to(self.device))
 
     def _load_finetune_weights(self, model) -> None:
@@ -344,6 +352,14 @@ class ExperimentRunner:
         if saved_model.get('sync_batchnorm', False) != cfg.model.sync_batchnorm:
             raise ValueError('Cannot resume with a different model.sync_batchnorm; choose a new run_name')
         saved_train = snapshot.get('train', snapshot)
+        if saved_train.get('jpeg_pair_training',False)!=cfg.train.jpeg_pair_training:
+            raise ValueError('Cannot change jpeg_pair_training on resume')
+        if cfg.train.jpeg_pair_training:
+            for key in ('jpeg_consistency_weight','jpeg_teacher_min_dice','jpeg_teacher_threshold',
+                        'jpeg_pair_quality_min','jpeg_pair_quality_max','finetune_from','finetune_weights',
+                        'epoch_size','epochs','batch_size','accum_steps','fmap_lr','warmup_frac','min_lr_factor'):
+                if saved_train.get(key)!=current[key]:
+                    raise ValueError(f'Cannot change train.{key} on paired resume')
         saved_eval = snapshot.get('eval', snapshot)
         if saved_train.get('sampling_strategy', 'negative_fraction') != cfg.train.sampling_strategy:
             raise ValueError('Cannot resume with a different train.sampling_strategy; choose a new run_name')
@@ -554,6 +570,11 @@ def train_one_epoch(
 ) -> EpochTrainResult:
     runtime = runtime or TrainingRuntime(device)
     model.train()
+    paired_objective=None
+    if config.train.jpeg_pair_training:
+        from src.training.jpeg_consistency import JPEGPairObjective,freeze_except_jpeg
+        freeze_except_jpeg(model)
+        paired_objective=JPEGPairObjective.from_config(config,device)
     skipped_steps = 0
     meter = LossMeter()
     criterion = SegmentationLoss(**config.loss.to_dict(), aux_weight=config.model.aux_weight,
@@ -591,10 +612,12 @@ def train_one_epoch(
                     model_kwargs['local_input'] = batch['local_input']
                 if 'native_rgb' in batch:
                     model_kwargs['native_rgb'] = batch['native_rgb']
-                loss_result = criterion(
-                    model(images, batch.get("fmap"), **model_kwargs),
-                    batch,
-                )
+                if paired_objective is not None:
+                    loss_result = paired_objective(model, batch)
+                else:
+                    loss_result = criterion(
+                        model(images, batch.get("fmap"), **model_kwargs), batch,
+                    )
             if profiler is not None:
                 profiler.mark()
             loss = loss_result.total

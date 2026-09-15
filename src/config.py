@@ -217,11 +217,29 @@ class TrainConfig(ConfigSection):
     # Model weights only; relative paths are resolved against paths.runs_path.
     finetune_from: str | None = None
     finetune_weights: str = 'model'
+    jpeg_pair_training: bool = False
+    jpeg_consistency_weight: float = 0.0
+    jpeg_teacher_min_dice: float = .8
+    jpeg_teacher_threshold: float = .47265625
+    jpeg_pair_quality_min: int = 80
+    jpeg_pair_quality_max: int = 95
 
     def __post_init__(self):
         self.validate()
 
     def validate(self):
+        if type(self.jpeg_pair_training) is not bool:
+            raise ValueError('jpeg_pair_training must be boolean')
+        _nonnegative(self.jpeg_consistency_weight,'train.jpeg_consistency_weight')
+        if self.jpeg_consistency_weight and not self.jpeg_pair_training:
+            raise ValueError('jpeg_consistency_weight requires jpeg_pair_training')
+        for name in ('jpeg_teacher_min_dice','jpeg_teacher_threshold'):
+            _check_probability_grid((getattr(self,name),),f'train.{name}')
+        if (type(self.jpeg_pair_quality_min) is not int or type(self.jpeg_pair_quality_max) is not int
+                or not 1<=self.jpeg_pair_quality_min<=self.jpeg_pair_quality_max<=100):
+            raise ValueError('JPEG pair quality range must be integers in [1,100]')
+        if self.jpeg_pair_training and not self.finetune_from:
+            raise ValueError('jpeg_pair_training requires a fixed finetune_from teacher')
         if self.devices != 'auto':
             if (not isinstance(self.devices, (list, tuple)) or not self.devices
                     or any(type(index) is not int or index < 0 for index in self.devices)

@@ -129,7 +129,18 @@ def build_datasets(
     amp = build_amp(config.train)
     local_dtype = amp.dtype if amp.enabled else torch.float32
 
-    train_ds = AIIJCDataset(
+    dataset_class=AIIJCDataset
+    pair_kwargs={}
+    if config.train.jpeg_pair_training:
+        if (config.model.forensic_mode!='jpeg' or config.dataset.resize_mode!='stretch'
+                or config.model.local_image_size or config.model.luma_image_size or config.model.wavelet_image_size
+                or config.model.strided_resize or config.model.forensic_contrastive_dim):
+            raise ValueError('JPEG pairs require the standard JPEG/stretch architecture without extra branches')
+        from src.data.jpeg_pair import JPEGPairDataset
+        dataset_class=JPEGPairDataset
+        pair_kwargs['pair_quality']=(config.train.jpeg_pair_quality_min,config.train.jpeg_pair_quality_max)
+    train_ds = dataset_class(
+        **pair_kwargs,
         data_workspace=data_workspace,
         folded_df=train_df,
         train=True,

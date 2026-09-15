@@ -1,0 +1,5 @@
+extends: jpeg640_pair_branch_control_3ep.yaml
+paths:
+  run_name: jpeg640_pair_s8_consistency_3ep
+train:
+  jpeg_consistency_weight: 0.05
