@@ -16,6 +16,11 @@ def main() -> None:
     parser.add_argument("--min-area", type=float)
     parser.add_argument("--area-cap", type=float, default=0.0,
                         help="0 zeroes a gated frame; above 0 clips it below this area instead")
+    parser.add_argument("--batch-size", type=int,
+                        help="default: the run's training batch size, which inference can exceed")
+    parser.add_argument("--workers", type=int, help="dataloader processes; default: the run's setting")
+    parser.add_argument("--post-workers", type=int, default=8,
+                        help="threads for thresholding and PNG encoding; 0 keeps it on the main thread")
     args = parser.parse_args()
     values = (args.mask_threshold, args.cls_threshold, args.min_area)
     if any(value is not None for value in values) and not all(value is not None for value in values):
@@ -24,7 +29,8 @@ def main() -> None:
         parser.error("--area-cap only applies with explicit thresholds; the run summary carries its own")
     thresholds = ThresholdConfig(*values, area_cap=args.area_cap) if values[0] is not None else None
     path = create_submission(args.run_dir, args.output_dir, thresholds=thresholds,
-                             data_path=args.data_path, template_path=args.template_path, device=args.device)
+                             data_path=args.data_path, template_path=args.template_path, device=args.device,
+                             batch_size=args.batch_size, workers=args.workers, post_workers=args.post_workers)
     print(path)
 
 

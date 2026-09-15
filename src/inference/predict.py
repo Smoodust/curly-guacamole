@@ -1,5 +1,6 @@
 """Checkpoint inference and binary masks at the original image resolution."""
 
+from collections import deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
@@ -53,34 +54,70 @@ class Predictor:
         self.thresholds = thresholds
         self.amp = amp
 
-    def predict(self, loader: Iterable) -> Iterator[Prediction]:
-        """Resize probabilities before thresholding; gate on the restored mask area."""
+    def predict(self, loader: Iterable, pool=None, queue_depth: int = 64) -> Iterator[Prediction]:
+        """Resize probabilities before thresholding; gate on the restored mask area.
+
+        With a `pool`, the per-frame numpy work (histogram, threshold, packing to
+        uint8) is handed to worker threads while the main thread goes straight
+        back to the next forward pass, so the GPU stops waiting on it. Results
+        are drained in submission order, so the writer still sees every frame
+        exactly once and in a deterministic sequence.
+
+        The GPU half stays on this thread on purpose: `probabilities` is an
+        inference tensor, and touching one outside the InferenceMode region that
+        made it raises. Only the numpy array that comes back is shared.
+        """
         self.model.eval()
+        pending: deque = deque()
         for batch in loader:
             # Leave inference/autocast contexts before yielding to caller code.
             with torch.inference_mode(), self.amp.autocast():
                 kwargs = {'jpeg': BatchTransfer.move_jpeg(batch['jpeg'], self.amp.device)} if 'jpeg' in batch else {}
-                output = self.model(batch['image'].to(self.amp.device), **kwargs)
+                # Same transfer as src.training.validation: the thresholds were
+                # tuned on the kernels channels_last selects.
+                images = batch['image'].to(self.amp.device, non_blocking=True,
+                                           memory_format=torch.channels_last)
+                output = self.model(images, **kwargs)
                 probabilities = output["logits"].float().sigmoid()
                 cls_probs = output["cls_logits"].float().sigmoid().flatten()
-            for index, image_path in enumerate(batch["image_path"]):
-                size = tuple(int(value) for value in batch["original_size"][index])
-                mask = self.binary_mask(probabilities[index:index + 1], float(cls_probs[index]), size)
-                yield Prediction(image_path, mask)
+                restored = [
+                    (image_path, float(cls_probs[index]),
+                     self.restore(probabilities[index:index + 1],
+                                  tuple(int(value) for value in batch["original_size"][index])))
+                    for index, image_path in enumerate(batch["image_path"])
+                ]
+            for image_path, cls_probability, frame in restored:
+                if pool is None:
+                    yield Prediction(image_path, self.mask_from_probabilities(frame, cls_probability))
+                else:
+                    pending.append((image_path,
+                                    pool.submit(self.mask_from_probabilities, frame, cls_probability)))
+            # Bounded so a slow consumer cannot let finished masks pile up in RAM.
+            while len(pending) >= queue_depth:
+                image_path, future = pending.popleft()
+                yield Prediction(image_path, future.result())
+        while pending:
+            image_path, future = pending.popleft()
+            yield Prediction(image_path, future.result())
 
-    def binary_mask(
-        self, probability: torch.Tensor, cls_probability: float, size: tuple[int, int],
-    ) -> np.ndarray:
+    def restore(self, probability: torch.Tensor, size: tuple[int, int]) -> np.ndarray:
+        """Upsample on device, then hand back a host array the worker threads may use."""
         if len(size) != 2 or min(size) <= 0:
             raise ValueError("original size must contain positive height and width")
-        restored = restore_probability(probability, size)
-        probabilities = restored[0, 0].cpu().numpy()
+        return restore_probability(probability, size)[0, 0].cpu().numpy()
+
+    def mask_from_probabilities(self, probabilities: np.ndarray, cls_probability: float) -> np.ndarray:
         bins, blank = self.operating_point(probabilities, cls_probability)
         if blank:
             mask = np.zeros(probabilities.shape, dtype=bool)
         else:
             mask = probabilities >= bins / self.thresholds.n_bins
         return mask.astype(np.uint8) * 255
+
+    def binary_mask(
+        self, probability: torch.Tensor, cls_probability: float, size: tuple[int, int],
+    ) -> np.ndarray:
+        return self.mask_from_probabilities(self.restore(probability, size), cls_probability)
 
     def operating_point(self, probabilities: np.ndarray, cls_probability: float) -> tuple[int, bool]:
         """Per-frame threshold bin and blanking flag, from the validation rule itself.

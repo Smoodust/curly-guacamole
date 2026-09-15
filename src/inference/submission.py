@@ -1,6 +1,7 @@
 """Build competition submission.csv and predictions/ from a saved run."""
 
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -51,7 +52,22 @@ class SubmissionWriter:
             raise ValueError(f"prediction path escapes output directory: {raw}")
         return resolved
 
-    def write(self, predictions: Iterable[Prediction]) -> Path:
+    @staticmethod
+    def _encode(mask: np.ndarray, path: Path) -> None:
+        Image.fromarray(mask).save(path, format="PNG")
+
+    def write(self, predictions: Iterable[Prediction], pool=None) -> Path:
+        """Validate on this thread; with a `pool`, encode and write PNGs on others.
+
+        PNG compression is the single largest per-frame cost left, and zlib
+        releases the GIL, so moving it off the main thread lets it overlap the
+        next forward pass instead of stalling the GPU behind it.
+        """
+        # Created up front: mkdir from several threads at once is a race, and the
+        # directory set is tiny compared to the number of frames.
+        for path in self.paths.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        futures = []
         for prediction in predictions:
             if prediction.image_path not in self.paths or prediction.image_path in self._written:
                 raise ValueError(f"unexpected or duplicate prediction: {prediction.image_path}")
@@ -59,9 +75,14 @@ class SubmissionWriter:
             if mask.ndim != 2 or mask.dtype != np.uint8 or not np.isin(mask, (0, 255)).all():
                 raise ValueError("prediction must be a single-channel uint8 mask containing only 0/255")
             path = self.paths[prediction.image_path]
-            path.parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(mask).save(path, format="PNG")
+            if pool is None:
+                self._encode(mask, path)
+            else:
+                futures.append(pool.submit(self._encode, mask, path))
             self._written.add(prediction.image_path)
+        # Surface any writer failure before the CSV claims the masks are on disk.
+        for future in futures:
+            future.result()
         if self._written != set(self.paths):
             raise ValueError("predictions are missing for some template rows")
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -101,6 +122,9 @@ def create_submission(
     data_path: str | Path | None = None,
     template_path: str | Path | None = None,
     device: str | None = None,
+    batch_size: int | None = None,
+    workers: int | None = None,
+    post_workers: int = 8,
 ) -> Path:
     """Load ckpt/best.pt (EMA preferred) and write the template-aligned submission."""
     ConsoleProgress.info(f"Submission: загрузка конфигурации запуска {run_dir}")
@@ -131,12 +155,21 @@ def create_submission(
     writer = SubmissionWriter(template, test_rows, output_dir)
     dataset = AIIJCDataset(workspace, test_rows, False, config.image_size, config.seed, mode='test')
     inference_device = torch.device(device or config.device)
+    # Training batch size is bounded by activation memory for the backward pass;
+    # inference has none, so the snapshot's value is only a starting point.
+    batch_size = int(batch_size or config.batch_size)
+    workers = config.workers if workers is None else int(workers)
+    if batch_size <= 0 or workers < 0 or post_workers < 0:
+        raise ValueError("batch_size must be positive; workers and post_workers non-negative")
     ConsoleProgress.info(
         f"Submission: изображений {len(test_rows)}, устройство {inference_device}, "
-        f"batch_size={config.batch_size}"
+        f"batch_size={batch_size}, workers={workers}, post_workers={post_workers}"
     )
     amp = AmpContext(inference_device, torch.bfloat16 if config.amp == "bf16" else torch.float16,
                      inference_device.type == "cuda" and config.amp != "off", False)
+    if inference_device.type == "cuda":
+        # Every batch is the same shape here, so autotuning pays for itself once.
+        torch.backends.cudnn.benchmark = True
     checkpoint_path = run.dir / "ckpt" / "best.pt"
     ConsoleProgress.info(f"Submission: загрузка checkpoint {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
@@ -144,11 +177,23 @@ def create_submission(
     ConsoleProgress.info(f"Submission: создание модели и применение весов {weights}")
     model = build_model(config.model, aux_weight=config.aux_weight, pretrained=False)
     model.load_state_dict(checkpoint[weights])
-    loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.workers,
-                        collate_fn=ValidationCollator())
+    del checkpoint
+    if inference_device.type == "cuda":
+        # Both validation paths score this model in channels_last, so the tuned
+        # thresholds describe those kernels. Matching here is a throughput win
+        # and keeps the submission on the arithmetic the operating point was
+        # chosen under.
+        model = model.to(memory_format=torch.channels_last)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
+                        collate_fn=ValidationCollator(), pin_memory=inference_device.type == "cuda",
+                        persistent_workers=workers > 0, prefetch_factor=4 if workers > 0 else None)
     ConsoleProgress.info(f"Submission: перенос модели на {inference_device}")
     predictor = Predictor(model, thresholds, amp)
     batches = ConsoleProgress.iterate(loader, "Submission: предсказание и сохранение PNG (батчи)")
-    csv_path = writer.write(predictor.predict(batches))
+    if post_workers:
+        with ThreadPoolExecutor(max_workers=post_workers, thread_name_prefix="postprocess") as pool:
+            csv_path = writer.write(predictor.predict(batches, pool=pool), pool=pool)
+    else:
+        csv_path = writer.write(predictor.predict(batches))
     ConsoleProgress.info(f"Submission: готово, масок {len(test_rows)}, результат {csv_path.parent}")
     return csv_path
