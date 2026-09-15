@@ -62,9 +62,12 @@ class ModelConfig(ConfigSection):
     encoder: str = 'pvt_v2_b2'
     jpeg_channels: tuple[int, ...] = (64, 96, 128)
     jpeg_pretrained: str | None = 'DCT_djpeg.pth'
+    jpeg_specialize_width: bool = True
 
     def __post_init__(self):
         _non_empty_str(self.encoder, 'model.encoder')
+        if type(self.jpeg_specialize_width) is not bool:
+            raise ValueError('model.jpeg_specialize_width must be a boolean')
         object.__setattr__(self, 'jpeg_channels', tuple(self.jpeg_channels))
         if len(self.jpeg_channels) != 3 or any(type(c) is not int or c <= 0 for c in self.jpeg_channels):
             raise ValueError('model.jpeg_channels must contain three positive integers')

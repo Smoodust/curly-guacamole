@@ -4,5 +4,6 @@ extends: ../baseline.yaml
 run_name: b2_li768
 model:
   encoder: pvt_v2_b2_li
+  jpeg_specialize_width: false
 dataset:
   image_size: 768

@@ -68,6 +68,7 @@ def build_model(config: ModelConfig, *, aux_weight: float = .4, pretrained: bool
 
     model = Segmenter(encoder=config.encoder, jpeg_channels=config.jpeg_channels,
                       aux_weight=aux_weight, pretrained=pretrained)
+    model.forensic_fusion.branch.artifact.dc_layer0_dil[0].specialize_width = config.jpeg_specialize_width
     if pretrained and config.jpeg_pretrained is not None:
         path = Path(config.jpeg_pretrained)
         if not path.is_absolute():

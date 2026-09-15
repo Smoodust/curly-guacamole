@@ -73,6 +73,7 @@ class JPEGCategoryConv2d(nn.Conv2d):
 
     def __init__(self):
         super().__init__(21, 64, 3, dilation=8, padding=8)
+        self.specialize_width = True
 
     def forward(self, bins):
         if bins.ndim == 4:
@@ -85,7 +86,7 @@ class JPEGCategoryConv2d(nn.Conv2d):
         if bins.device.type == 'cuda' and dtype in (torch.float32, torch.float16, torch.bfloat16):
             kernel = _cuda_category_conv()
             if kernel is not None:
-                return kernel.apply(bins.contiguous(), weight.contiguous(), bias.contiguous())
+                return kernel.apply(bins.contiguous(), weight.contiguous(), bias.contiguous(), self.specialize_width)
         indices = F.pad(bins.long(), (8, 8, 8, 8), value=21)
         # Match convolution's low-precision inputs with FP32 accumulation.
         if dtype in (torch.float16, torch.bfloat16):
