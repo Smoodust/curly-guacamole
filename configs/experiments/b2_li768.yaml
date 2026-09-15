@@ -1,0 +1,8 @@
+# Largest supported RGB size under 100 GFLOPs for native up to Full HD.
+# 768: 97.678 GFLOPs at 1024²; 99.484 at 1080x1920. 776 exceeds 100.
+extends: ../baseline.yaml
+run_name: b2_li768
+model:
+  encoder: pvt_v2_b2_li
+dataset:
+  image_size: 768
