@@ -204,6 +204,8 @@ class TrainConfig(ConfigSection):
     full_train_epochs: int = 0
     negative_fraction: float = .25
     sampling_strategy: str = 'negative_fraction'
+    focus_manifest: str | None = None
+    focus_fraction: float = .5
     batch_size: int = 4
     accum_steps: int = 4
     warmup_frac: float = .05
@@ -214,6 +216,7 @@ class TrainConfig(ConfigSection):
     resume: bool = False
     # Model weights only; relative paths are resolved against paths.runs_path.
     finetune_from: str | None = None
+    finetune_weights: str = 'model'
 
     def __post_init__(self):
         self.validate()
@@ -248,8 +251,16 @@ class TrainConfig(ConfigSection):
             _check_probability_grid((getattr(self, name),), f'train.{name}')
         if not 0 < self.negative_fraction < 1:
             raise ValueError('train.negative_fraction must be in (0, 1)')
-        if self.sampling_strategy not in {'negative_fraction', 'uniform_mask_area'}:
-            raise ValueError('train.sampling_strategy must be negative_fraction or uniform_mask_area')
+        if self.sampling_strategy not in {'negative_fraction', 'uniform_mask_area', 'focus_coverage'}:
+            raise ValueError('unknown train.sampling_strategy')
+        if self.sampling_strategy == 'focus_coverage':
+            _non_empty_str(self.focus_manifest, 'train.focus_manifest')
+            if not 0 < self.focus_fraction < 1 - self.negative_fraction:
+                raise ValueError('focus_fraction must leave room for negatives and other positives')
+            if self.full_train_epochs:
+                raise ValueError('focus_coverage cannot be overridden by full_train_epochs')
+        if self.finetune_weights not in {'model', 'ema'}:
+            raise ValueError('finetune_weights must be model or ema')
         if not 0 <= self.ema_decay < 1:
             raise ValueError('train.ema_decay must be in [0, 1)')
         if self.amp not in {'off', 'fp16', 'bf16'}:

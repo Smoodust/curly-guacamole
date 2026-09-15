@@ -25,12 +25,14 @@ def test_all_epochs_cover_full_train_and_decay_lr():
 
 
 @pytest.mark.parametrize('resume_exists', [False, True])
-def test_finetune_loads_model_weights_unless_resuming(tmp_path, monkeypatch, resume_exists):
+@pytest.mark.parametrize('weights', ['model', 'ema'])
+def test_finetune_loads_model_weights_unless_resuming(tmp_path, monkeypatch, resume_exists, weights):
     import src.training.engine as engine
 
     cfg = load_experiment_config('configs/rgb576.yaml')
     cfg = replace(cfg, paths=replace(cfg.paths, runs_path=tmp_path),
-                  train=replace(cfg.train, device='cpu', finetune_from='source/ckpt/last.pt'))
+                  train=replace(cfg.train, device='cpu', finetune_from='source/ckpt/last.pt',
+                                finetune_weights=weights))
     source = tmp_path / cfg.train.finetune_from
     source.parent.mkdir(parents=True)
     torch.save({'model': {'weight': torch.tensor([[7.]])},
@@ -53,4 +55,4 @@ def test_finetune_loads_model_weights_unless_resuming(tmp_path, monkeypatch, res
     monkeypatch.setattr(engine.EvaluationProtocol, 'load', lambda path: Protocol())
     actual = ExperimentRunner(cfg)._build_training_model()
     assert calls == [False]
-    assert actual.weight.item() == (0. if resume_exists else 7.)
+    assert actual.weight.item() == (0. if resume_exists else 9. if weights == 'ema' else 7.)

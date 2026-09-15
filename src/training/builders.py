@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
+import pandas as pd
 import torch
 from threadpoolctl import threadpool_limits
 from torch.utils.data import DataLoader, WeightedRandomSampler
@@ -22,6 +23,7 @@ from src.training.sampling import (
     DistributedBatchSampler,
     DistributedValidationSampler,
     FinalFullTrainSampler,
+    FocusCoverageSampler,
     UniformMaskAreaSampler,
 )
 
@@ -181,6 +183,16 @@ def build_sampler(
         if 'mask_area' not in train_ds.df:
             raise ValueError('uniform_mask_area requires mask_area in the train dataset')
         return UniformMaskAreaSampler(train_ds.df['mask_area'], config.epoch_size)
+    if config.sampling_strategy == 'focus_coverage':
+        manifest = Path(config.focus_manifest)
+        if not manifest.is_absolute():
+            manifest = global_config.PROJECT_ROOT / manifest
+        paths = pd.read_parquet(manifest)['chng_img_path']
+        train_paths = train_ds.df['chng_img_path']
+        if paths.duplicated().any() or not paths.isin(train_paths).all():
+            raise ValueError('focus manifest must contain unique paths from train only')
+        return FocusCoverageSampler(train_paths.isin(paths), train_ds.is_negative,
+                                    config.epoch_size, config.focus_fraction, config.negative_fraction)
     neg = train_ds.is_negative
     if neg is None:
         raise ValueError("train dataset must expose is_negative for weighted sampling")

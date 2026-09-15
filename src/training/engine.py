@@ -316,14 +316,14 @@ class ExperimentRunner:
         return configure_memory_format(model.to(self.device))
 
     def _load_finetune_weights(self, model) -> None:
-        """Start a new optimizer/schedule/EMA from a source run's model weights."""
+        """Start a new optimizer/schedule/EMA from the selected source weights."""
         cfg = self.config
         checkpoint = cfg.paths.runs_path / cfg.train.finetune_from
         if (checkpoint.parent.parent / 'holdout_claim.json').exists():
             raise ValueError('Cannot finetune a run after holdout evaluation was claimed')
         saved = torch.load(checkpoint, map_location='cpu', weights_only=True)
         EvaluationProtocol.load(cfg.dataset.protocol_path).verify_run(saved['cfg'])
-        model.load_state_dict(saved['model'])
+        model.load_state_dict(saved[cfg.train.finetune_weights])
 
     def _check_resume_protocol(self) -> None:
         cfg = self.config
@@ -347,6 +347,11 @@ class ExperimentRunner:
         saved_eval = snapshot.get('eval', snapshot)
         if saved_train.get('sampling_strategy', 'negative_fraction') != cfg.train.sampling_strategy:
             raise ValueError('Cannot resume with a different train.sampling_strategy; choose a new run_name')
+        if cfg.train.sampling_strategy == 'focus_coverage':
+            for key in ('focus_manifest', 'focus_fraction', 'negative_fraction', 'epoch_size',
+                        'epochs', 'batch_size', 'accum_steps'):
+                if saved_train.get(key) != current[key]:
+                    raise ValueError(f'Cannot resume with a different train.{key}; choose a new run_name')
         if saved_eval.get('small_mask_weight', 1.0) != cfg.eval.small_mask_weight:
             raise ValueError('Cannot resume with a different eval.small_mask_weight; choose a new run_name')
         if cfg.train.full_train_epochs or saved_train.get('full_train_epochs', 0):

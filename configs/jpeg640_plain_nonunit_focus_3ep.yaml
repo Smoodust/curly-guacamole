@@ -1,0 +1,7 @@
+extends: jpeg640_plain_nonunit_control_3ep.yaml
+paths:
+  run_name: jpeg640_plain_nonunit_focus_3ep
+train:
+  sampling_strategy: focus_coverage
+  focus_manifest: runs/plain_nonunit_finetune_20260915/focus_rows.parquet
+  focus_fraction: 0.5

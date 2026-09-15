@@ -5,6 +5,40 @@ import torch
 from torch.utils.data import Sampler
 
 
+class FocusCoverageSampler(Sampler):
+    """Cover every focus positive, then replay other positives and negatives."""
+
+    def __init__(self, focus, negative, num_samples, focus_fraction=.5, negative_fraction=.25):
+        focus = np.asarray(focus, dtype=bool)
+        negative = np.asarray(negative, dtype=bool)
+        if focus.shape != negative.shape or (focus & negative).any():
+            raise ValueError('focus must contain positive train rows only')
+        self.pools = [torch.from_numpy(np.flatnonzero(mask))
+                      for mask in (focus, ~focus & ~negative, negative)]
+        n_focus = round(num_samples * focus_fraction)
+        n_negative = round(num_samples * negative_fraction)
+        self.counts = [n_focus, num_samples - n_focus - n_negative, n_negative]
+        if any(len(pool) == 0 for pool in self.pools):
+            raise ValueError('focus, other positives and negatives must all be present')
+        if n_focus < len(self.pools[0]):
+            raise ValueError('epoch budget cannot cover every focus row')
+        self.num_samples = num_samples
+        self.generator = None
+
+    def __len__(self):
+        return self.num_samples
+
+    def __iter__(self):
+        focus, other, negative = self.pools
+        repeats = math.ceil(self.counts[0] / len(focus))
+        indices = [torch.cat([focus[torch.randperm(len(focus), generator=self.generator)]
+                              for _ in range(repeats)])[:self.counts[0]]]
+        for pool, count in zip((other, negative), self.counts[1:]):
+            indices.append(pool[torch.randint(len(pool), (count,), generator=self.generator)])
+        indices = torch.cat(indices)
+        return iter(indices[torch.randperm(len(indices), generator=self.generator)].tolist())
+
+
 class UniformMaskAreaSampler(torch.utils.data.WeightedRandomSampler):
     """Equal probability for empty masks and five positive area buckets."""
 
