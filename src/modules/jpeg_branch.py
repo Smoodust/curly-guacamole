@@ -51,13 +51,42 @@ class JPEGFrameBatchNorm2d(nn.BatchNorm2d):
                 cls.replace_in(child)
 
 
+class _PointwiseConvWithoutCuDNN(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, weight):
+        ctx.save_for_backward(x, weight)
+        with torch.backends.cudnn.flags(enabled=False):
+            return F.conv2d(x, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, weight = ctx.saved_tensors
+        # PyTorch queries cuDNN flags again in backward, independently of forward.
+        with torch.backends.cudnn.flags(enabled=False):
+            grad_x, grad_weight, _ = torch.ops.aten.convolution_backward(
+                grad_output, x, weight, None, [1, 1], [0, 0], [1, 1],
+                False, [0, 0], 1, [*ctx.needs_input_grad, False],
+            )
+        return grad_x, grad_weight
+
+
 class JPEGPointwiseConv2d(nn.Conv2d):
     """Keep Conv2d checkpoint keys while avoiding per-shape cuDNN compilation."""
 
     def __init__(self):
         super().__init__(64, 4, 1, bias=False)
+        self.use_matmul = True
 
     def forward(self, x):
+        if not self.use_matmul:
+            if x.device.type == 'meta':
+                return super().forward(x)
+            weight = self.weight
+            if torch.is_autocast_enabled(x.device.type):
+                dtype = torch.get_autocast_dtype(x.device.type)
+                x, weight = x.to(dtype), weight.to(dtype)
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                return _PointwiseConvWithoutCuDNN.apply(x, weight)
         # A 1x1 convolution is a matrix product over channels at each position.
         # Native autograd handles both gradients without a convolution backend.
         return (self.weight.flatten(1) @ x.flatten(2)).reshape(x.shape[0], 4, *x.shape[-2:])

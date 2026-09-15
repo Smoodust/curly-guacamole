@@ -34,14 +34,18 @@ def imagenet_normalize(sample: DataSample) -> DataSample:
 class SamplePreprocessor:
     """Resize image/mask together and transport RGB as uint8 CHW."""
 
-    def __init__(self, image_size: int):
+    def __init__(self, image_size: int, *, rgb_uint8_transport: bool = True):
+        self.rgb_uint8_transport = rgb_uint8_transport
         self.image_size = image_size
 
     def resize(self, sample: DataSample) -> DataSample:
         return image_resize(sample, self.image_size)
 
     def to_output(self, sample: DataSample) -> dict[str, torch.Tensor]:
-        image = torch.from_numpy(np.ascontiguousarray(sample.image.transpose(2, 0, 1)))
+        if self.rgb_uint8_transport:
+            image = torch.from_numpy(np.ascontiguousarray(sample.image.transpose(2, 0, 1)))
+        else:
+            image = imagenet_normalize(sample).image
         output = {"image": image}
         if sample.mask is not None:
             mask = mask_to_tensor(sample.mask)

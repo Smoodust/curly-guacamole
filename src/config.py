@@ -63,11 +63,14 @@ class ModelConfig(ConfigSection):
     jpeg_channels: tuple[int, ...] = (64, 96, 128)
     jpeg_pretrained: str | None = 'DCT_djpeg.pth'
     jpeg_specialize_width: bool = True
+    jpeg_pointwise_matmul: bool = True
 
     def __post_init__(self):
         _non_empty_str(self.encoder, 'model.encoder')
         if type(self.jpeg_specialize_width) is not bool:
             raise ValueError('model.jpeg_specialize_width must be a boolean')
+        if type(self.jpeg_pointwise_matmul) is not bool:
+            raise ValueError('model.jpeg_pointwise_matmul must be a boolean')
         object.__setattr__(self, 'jpeg_channels', tuple(self.jpeg_channels))
         if len(self.jpeg_channels) != 3 or any(type(c) is not int or c <= 0 for c in self.jpeg_channels):
             raise ValueError('model.jpeg_channels must contain three positive integers')
@@ -78,10 +81,13 @@ class ModelConfig(ConfigSection):
 @dataclass(frozen=True)
 class DatasetConfig(ConfigSection):
     image_size: int = 640
+    rgb_uint8_transport: bool = True
     # A storage location, never an enable/disable switch. The manifest is mandatory.
     protocol_path: str = DEFAULT_PROTOCOL_PATH
 
     def __post_init__(self):
+        if type(self.rgb_uint8_transport) is not bool:
+            raise ValueError('dataset.rgb_uint8_transport must be a boolean')
         if type(self.image_size) is not int or self.image_size < 8 or self.image_size % 8:
             raise ValueError('dataset.image_size must be divisible by 8 and at least 8')
         _non_empty_str(self.protocol_path, 'dataset.protocol_path')

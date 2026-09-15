@@ -69,6 +69,7 @@ def build_model(config: ModelConfig, *, aux_weight: float = .4, pretrained: bool
     model = Segmenter(encoder=config.encoder, jpeg_channels=config.jpeg_channels,
                       aux_weight=aux_weight, pretrained=pretrained)
     model.forensic_fusion.branch.artifact.dc_layer0_dil[0].specialize_width = config.jpeg_specialize_width
+    model.forensic_fusion.branch.artifact.dc_layer1_tail[0].use_matmul = config.jpeg_pointwise_matmul
     if pretrained and config.jpeg_pretrained is not None:
         path = Path(config.jpeg_pretrained)
         if not path.is_absolute():
@@ -101,6 +102,8 @@ def build_datasets(
     val_ds = AIIJCDataset(data_workspace, val_df, False, config.dataset.image_size,
                          config.seed, mode='val', original_targets=True)
 
+    for dataset in (train_ds, val_ds):
+        dataset.preprocessor.rgb_uint8_transport = config.dataset.rgb_uint8_transport
     return train_ds, val_ds
 
 
