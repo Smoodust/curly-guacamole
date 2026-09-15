@@ -90,10 +90,23 @@ class Predictor:
         would let inference and selection drift apart silently, and the reported
         score would stop describing the submission.
         """
-        n_bins = self.thresholds.n_bins
-        index = np.clip((probabilities * n_bins).astype(np.int32), 0, n_bins - 1)
-        histogram = np.bincount(index.reshape(-1), minlength=n_bins)
-        pred_counts = np.cumsum(histogram[::-1])[::-1][None]
+        n_bins, start = self.thresholds.n_bins, self.thresholds.bin_index
+        size = probabilities.size
+        # Only bins at or above bin_index can change the answer: operating_bins
+        # takes max(bin_index, cap_index), so a cap satisfied lower down still
+        # resolves to bin_index. Histogramming the suprathreshold pixels alone
+        # turns a full-frame pass into one over the predicted region, which on a
+        # negative frame is a rounding error. Bins below start are filled with
+        # the frame size, an area of 1.0, so cap_bins never selects them.
+        pred_counts = np.full((1, n_bins), float(size))
+        above = probabilities.reshape(-1)
+        above = above[above >= start / n_bins]
+        if above.size:
+            index = np.clip((above * n_bins).astype(np.int32), start, n_bins - 1)
+            histogram = np.bincount(index - start, minlength=n_bins - start)
+            pred_counts[0, start:] = np.cumsum(histogram[::-1])[::-1]
+        else:
+            pred_counts[0, start:] = 0.0
         bins, blank = operating_bins(
             pred_counts,
             np.array([probabilities.size], dtype=np.float64),
