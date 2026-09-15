@@ -93,11 +93,13 @@ class ValidationHistograms:
 def _score_validation(acc, config, thresholds):
     if thresholds is None:
         ConsoleProgress.info('Подбор порогов маски, классификации и минимальной площади по AIC')
-        tuned = acc.best(config.eval.mask_thresholds, config.eval.cls_thresholds, config.eval.min_areas)
+        tuned = acc.best(config.eval.mask_thresholds, config.eval.cls_thresholds,
+                         config.eval.min_areas, config.eval.area_caps)
     else:
         if thresholds.mask_threshold >= 1 or thresholds.mask_threshold * acc.n_bins != int(thresholds.mask_threshold * acc.n_bins):
             raise ValueError('Frozen mask threshold must match an exact histogram boundary')
-        tuned = acc.evaluate(thresholds.mask_threshold, thresholds.cls_threshold, thresholds.min_area)
+        tuned = acc.evaluate(thresholds.mask_threshold, thresholds.cls_threshold,
+                             thresholds.min_area, thresholds.area_cap)
     ConsoleProgress.info(f'Оценка завершена: {tuned}')
     return tuned, acc.evaluate(.5, .0, .0)
 

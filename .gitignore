@@ -32,8 +32,11 @@ runs/
 
 # Competition submissions and temporary audits
 submissions/
-submission.zip
 predictions/
 tmp/
 %SystemDrive%/
 docs/
+
+# Run archives downloaded from training servers (hundreds of MB each)
+*.zip
+!submission_template.zip

@@ -111,10 +111,18 @@ def create_submission(
         keys = ("mask_threshold", "cls_threshold", "min_area")
         if not all(key in best for key in keys):
             raise ValueError("run summary has no operating point; pass thresholds explicitly")
-        thresholds = ThresholdConfig(**{key: float(best[key]) for key in keys})
+        thresholds = ThresholdConfig(
+            **{key: float(best[key]) for key in keys},
+            # Summaries written before the capped gate existed have no area_cap;
+            # 0 is exactly the gate they were tuned under.
+            area_cap=float(best.get("area_cap", 0.0)),
+            # Snapshots are flat (to_flat_dict), but older ones nest under "eval".
+            n_bins=int(run.snapshot.get("eval", run.snapshot).get("n_bins", 256)),
+        )
     ConsoleProgress.info(
         f"Submission: пороги mask={thresholds.mask_threshold:g}, "
-        f"cls={thresholds.cls_threshold:g}, min_area={thresholds.min_area:g}"
+        f"cls={thresholds.cls_threshold:g}, min_area={thresholds.min_area:g}, "
+        f"area_cap={thresholds.area_cap:g}"
     )
     ConsoleProgress.info("Submission: чтение тестовых данных и шаблона")
     workspace = DataWorkspace(Path(data_path) if data_path is not None else config.data_path)

@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from src.training.metric import harmonic_aic
+from src.training.metric import harmonic_aic, operating_bins
 
 
 class EvaluationReport:
@@ -38,9 +38,21 @@ class EvaluationReport:
     def per_image(self):
         p, i, g, n, c = self.accumulator.tables()
         k = min(int(self.thresholds.mask_threshold * self.accumulator.n_bins), self.accumulator.n_bins - 1)
-        area = p[:, k] / n
-        keep_area = area >= self.thresholds.min_area
-        keep = (c >= self.thresholds.cls_threshold) & keep_area
+        area_cap = float(getattr(self.thresholds, 'area_cap', 0.0))
+        # Same rule as the sweep and as inference. A private copy here would make
+        # the per-image report describe a different operating point than the one
+        # the checkpoint was selected under, which is exactly the drift the
+        # shared helper exists to prevent.
+        rows_index = np.arange(p.shape[0])
+        bins, blank = operating_bins(p, n, c, k, self.thresholds.cls_threshold,
+                                     self.thresholds.min_area, area_cap)
+        # "no gate" keeps the area rule but ignores the classifier, so the pair
+        # stays comparable however the gate is configured.
+        _, blank_area = operating_bins(p, n, c, k, 0.0, self.thresholds.min_area, 0.0)
+        keep, keep_area = ~blank, ~blank_area
+        p_no_gate, i_no_gate = p[:, k], i[:, k]
+        p, i = np.where(keep, p[rows_index, bins], 0.0), np.where(keep, i[rows_index, bins], 0.0)
+        area, area_no_gate = p / n, p_no_gate / n
         frame = self.rows.copy()
         if 'target_kind' not in frame:
             frame['target_kind'] = 'provided'
@@ -49,11 +61,12 @@ class EvaluationReport:
         frame['is_positive'] = g > 0
         frame['gt_fraction'] = g / n
         frame['cls_probability'] = c
-        frame['pred_fraction'] = area * keep
-        frame['dice'] = np.where(g > 0, 2 * i[:, k] * keep / (p[:, k] * keep + g + 1e-6), np.nan)
-        frame['false_positive'] = (g == 0) & (area >= .01) & keep
-        frame['dice_no_gate'] = np.where(g > 0, 2 * i[:, k] * keep_area / (p[:, k] * keep_area + g + 1e-6), np.nan)
-        frame['false_positive_no_gate'] = (g == 0) & (area >= .01) & keep_area
+        frame['pred_fraction'] = area
+        frame['dice'] = np.where(g > 0, 2 * i / (p + g + 1e-6), np.nan)
+        frame['false_positive'] = (g == 0) & (area >= .01)
+        frame['dice_no_gate'] = np.where(
+            g > 0, 2 * i_no_gate * keep_area / (p_no_gate * keep_area + g + 1e-6), np.nan)
+        frame['false_positive_no_gate'] = (g == 0) & (area_no_gate >= .01) & keep_area
         frame['area_bin'] = pd.cut(frame.gt_fraction, [-1, 0, .01, .05, .15, 1.],
                                     labels=['negative', '(0,1%]', '(1,5%]', '(5,15%]', '(15,100%]'])
         return frame
@@ -77,7 +90,8 @@ class EvaluationReport:
             ('originals', frame.loc[frame.target_kind == 'original_zero']))}
         if self.accumulator.small_mask_weight != 1.0 and frame.is_positive.any() and (~frame.is_positive).any():
             result = self.accumulator.evaluate(self.thresholds.mask_threshold, self.thresholds.cls_threshold,
-                                               self.thresholds.min_area)
+                                               self.thresholds.min_area, area_cap=float(
+                                                   getattr(self.thresholds, 'area_cap', 0.0)))
             summary['selection'] = result.as_dict()
         return summary
 

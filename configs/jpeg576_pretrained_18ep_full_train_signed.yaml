@@ -1,0 +1,15 @@
+# Restore the sign and the tail of the DCT coefficients on the best schedule.
+#
+# The CAT-Net stem sees min(abs(quantized Y DCT), 20) as 21 one-hot categories:
+# the sign is discarded and everything above 20 collapses into one bin. Resampling
+# and blending leave signed, high-magnitude traces that this quantization erases.
+# The signed arm adds a 1x1 projection of signed_log(coefficients) at stride 8,
+# scale-initialized at 0.01, so it starts as a no-op and costs ~0.03 GFLOPs.
+extends: jpeg576_pretrained_18ep_full_train.yaml
+paths:
+  run_name: jpeg576_pretrained_18ep_full_train_signed
+model:
+  jpeg_variant: signed
+  # The inherited DCT_djpeg.pth is a truncated download; CAT_Net_pretrained_full.pth
+  # is the official release carrying the same dc_layer0_dil/dc_layer1_tail tensors.
+  jpeg_pretrained: CAT_Net_pretrained_full.pth

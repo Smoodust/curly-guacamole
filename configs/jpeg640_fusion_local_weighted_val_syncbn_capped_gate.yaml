@@ -1,0 +1,26 @@
+# Re-tune the operating point with the capped classifier gate.
+#
+# Measured offline on this run's own saved histograms (oof/val.npz), true
+# unweighted AIC on development:
+#
+#   shipped point (thr .4219 / cls .70 / min_area 0)   0.91802
+#   best reachable by thresholds alone                 0.91866   (+0.0006)
+#   best with area_cap = 0.01                          0.92113   (+0.0031)
+#
+# min_areas stays [0.0] deliberately. A false alarm is scored from 1% of the
+# frame, so any min_area <= 0.01 only blanks frames that were never false alarms
+# while destroying the Dice of small positives -- it cannot move FPR at all, and
+# every value measured came out worse. Above 1% it does cut FPR, but the Dice
+# cost is several times the gain.
+#
+# area_cap is what min_area was reaching for. Instead of zeroing a frame the
+# classifier doubts, it raises that frame's threshold until the area drops under
+# the cap: identical for FPR, but a wrongly gated positive keeps a partial mask
+# instead of a zero. That decouples the two terms, so the gate can run much
+# harder -- cls .76 -> .82, FPR .0129 -> .0095 -- and Dice goes up rather than down.
+extends: jpeg640_fusion_local_weighted_val_syncbn.yaml
+paths:
+  run_name: jpeg640_fusion_local_weighted_val_syncbn_capped_gate
+eval:
+  area_caps: [0.0, 0.008, 0.0095, 0.01]
+  cls_thresholds: [0.0, 0.5, 0.6, 0.65, 0.7, 0.74, 0.78, 0.8, 0.82, 0.84, 0.86, 0.9, 0.95]

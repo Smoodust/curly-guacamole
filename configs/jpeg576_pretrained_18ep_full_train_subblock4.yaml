@@ -1,0 +1,16 @@
+# Stride-4 forensic fusion on the current best schedule.
+#
+# Every other arm fuses at 8/16/32, so the finest forensic evidence the decoder
+# ever sees is one value per native 8x8 JPEG block, aligned onto a 72x72 grid.
+# subblock4 converts the dequantized 8x8 DCT into four 4x4 blocks -- an exact
+# change of basis, no interpolation -- and opens a fourth fusion level at
+# stride 4. This is the cheapest available attack on the resolution loss
+# between native coefficients and the 576 model input.
+extends: jpeg576_pretrained_18ep_full_train.yaml
+paths:
+  run_name: jpeg576_pretrained_18ep_full_train_subblock4
+model:
+  jpeg_variant: subblock4
+  # The inherited DCT_djpeg.pth is a truncated download; CAT_Net_pretrained_full.pth
+  # is the official release carrying the same dc_layer0_dil/dc_layer1_tail tensors.
+  jpeg_pretrained: CAT_Net_pretrained_full.pth

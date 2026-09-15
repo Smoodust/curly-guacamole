@@ -52,7 +52,9 @@ class CheckpointEvaluator:
         self.checkpoint_path = self.run.dir / 'ckpt/best.pt'
         self.checkpoint_digest = file_digest(self.checkpoint_path)
         best = self.run.summary['best']
-        self.thresholds = ThresholdConfig(**{key: best[key] for key in ('mask_threshold', 'cls_threshold', 'min_area')})
+        # Summaries written before area_cap existed carry no key; those runs were selected without it.
+        self.thresholds = ThresholdConfig(**{key: best[key] for key in ('mask_threshold', 'cls_threshold', 'min_area')},
+                                          area_cap=float(best.get('area_cap', 0.0)))
 
     def evaluate(self, rows, directory, *, purpose):
         directory = Path(directory)
@@ -119,7 +121,11 @@ class CheckpointEvaluator:
         checkpoint = torch.load(self.checkpoint_path, map_location='cpu', weights_only=True)
         protocol.verify_run(checkpoint.get('cfg', {}))
         point = checkpoint.get('operating_point', {})
-        if any(point.get(key) != value for key, value in asdict(self.thresholds).items()):
+        # Compare only the fields that name the operating point. n_bins describes the
+        # histogram grid, is absent from every saved operating_point, and so would never
+        # compare equal; area_cap is absent from checkpoints written before it existed.
+        selected = {key: value for key, value in asdict(self.thresholds).items() if key != 'n_bins'}
+        if any(float(point.get(key, 0.0)) != value for key, value in selected.items()):
             raise ValueError('Holdout thresholds differ from selected checkpoint operating point')
         del checkpoint
         for name, expected in [('training', self.run.snapshot['training_rows_digest']),

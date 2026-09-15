@@ -8,6 +8,7 @@ import torch
 
 from src.data.geometry import restore_probability
 from src.training.builders import AmpContext
+from src.training.metric import operating_bins
 from src.training.transfer import BatchTransfer
 
 
@@ -16,11 +17,28 @@ class ThresholdConfig:
     mask_threshold: float = 0.5
     cls_threshold: float = 0.0
     min_area: float = 0.0
+    # 0 keeps the historical gate, which zeroes a doubted frame outright. Above 0
+    # the gate instead raises that frame's threshold until its area drops below
+    # the cap, so a wrongly gated positive keeps a partial mask.
+    area_cap: float = 0.0
+    # Thresholds are resolved on the validation histogram grid; inference must
+    # use the same one or a tuned operating point does not reproduce here.
+    n_bins: int = 256
 
     def __post_init__(self) -> None:
-        for name in ("mask_threshold", "cls_threshold", "min_area"):
+        for name in ("mask_threshold", "cls_threshold", "min_area", "area_cap"):
             if not 0.0 <= getattr(self, name) <= 1.0:
                 raise ValueError(f"{name} must be finite and in [0, 1]")
+        if type(self.n_bins) is not int or self.n_bins <= 0:
+            raise ValueError("n_bins must be a positive integer")
+        if self.mask_threshold * self.n_bins != int(self.mask_threshold * self.n_bins):
+            raise ValueError(
+                f"mask_threshold {self.mask_threshold} is not a boundary of the {self.n_bins}-bin "
+                "histogram grid; validation could not have selected it")
+
+    @property
+    def bin_index(self) -> int:
+        return min(int(self.mask_threshold * self.n_bins), self.n_bins - 1)
 
 
 @dataclass(frozen=True)
@@ -56,7 +74,33 @@ class Predictor:
         if len(size) != 2 or min(size) <= 0:
             raise ValueError("original size must contain positive height and width")
         restored = restore_probability(probability, size)
-        mask = restored[0, 0].cpu().numpy() >= self.thresholds.mask_threshold
-        if cls_probability < self.thresholds.cls_threshold or mask.mean() < self.thresholds.min_area:
-            mask[:] = False
+        probabilities = restored[0, 0].cpu().numpy()
+        bins, blank = self.operating_point(probabilities, cls_probability)
+        if blank:
+            mask = np.zeros(probabilities.shape, dtype=bool)
+        else:
+            mask = probabilities >= bins / self.thresholds.n_bins
         return mask.astype(np.uint8) * 255
+
+    def operating_point(self, probabilities: np.ndarray, cls_probability: float) -> tuple[int, bool]:
+        """Per-frame threshold bin and blanking flag, from the validation rule itself.
+
+        The sweep that chose these thresholds calls the same `operating_bins`, on
+        histograms of the same restored probabilities. Reimplementing the rule here
+        would let inference and selection drift apart silently, and the reported
+        score would stop describing the submission.
+        """
+        n_bins = self.thresholds.n_bins
+        index = np.clip((probabilities * n_bins).astype(np.int32), 0, n_bins - 1)
+        histogram = np.bincount(index.reshape(-1), minlength=n_bins)
+        pred_counts = np.cumsum(histogram[::-1])[::-1][None]
+        bins, blank = operating_bins(
+            pred_counts,
+            np.array([probabilities.size], dtype=np.float64),
+            np.array([cls_probability], dtype=np.float64),
+            self.thresholds.bin_index,
+            self.thresholds.cls_threshold,
+            self.thresholds.min_area,
+            self.thresholds.area_cap,
+        )
+        return int(bins[0]), bool(blank[0])

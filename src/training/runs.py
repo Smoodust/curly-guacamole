@@ -38,6 +38,7 @@ import yaml
 
 from .metric import (
     DEFAULT_AREA_GRID,
+    DEFAULT_CAP_GRID,
     DEFAULT_CLS_GRID,
     DEFAULT_MASK_GRID,
     AICAccumulator,
@@ -81,9 +82,10 @@ class Eval:
         mask_thresholds=None,
         cls_thresholds=DEFAULT_CLS_GRID,
         min_areas=DEFAULT_AREA_GRID,
+        area_caps=DEFAULT_CAP_GRID,
     ) -> AICResult:
         grid = list(DEFAULT_MASK_GRID) if mask_thresholds is None else list(mask_thresholds)
-        return self.acc.best(grid, list(cls_thresholds), list(min_areas))
+        return self.acc.best(grid, list(cls_thresholds), list(min_areas), list(area_caps))
 
 
 class Run:

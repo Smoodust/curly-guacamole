@@ -1,0 +1,32 @@
+# PVT-v2-B2 + native JPEG + LocalFusion + EMCAD; SyncBN is built in.
+# Hardware and machine paths: .env. All resolved values are saved in each run.
+pipeline_version: jpeg640_v1
+run_name: jpeg640_fusion_local_weighted_val_syncbn
+seed: 42
+model:
+  encoder: pvt_v2_b2
+  jpeg_channels: [64, 96, 128]
+  jpeg_pretrained: DCT_djpeg.pth
+dataset:
+  image_size: 640
+  protocol_path: runs/validation_protocol_20260908/protocol
+train:
+  epochs: 6
+  samples_per_epoch: 24000
+  encoder_lr: 0.0001
+  jpeg_lr: 0.0003
+  head_lr: 0.0003
+  negative_fraction: 0.25
+  resume: true
+loss:
+  dice_weight: 1.0
+  aux_weight: 0.4
+eval:
+  selection_small_mask_weight: 1.6
+augmentation:
+  crop_scale_range: [0.35, 1.0]
+  jpeg_recompression_probability: 0.3
+  jpeg_recompression_quality_range: [60, 100]
+  full_frame_probability: 0.5
+  foreground_crop_probability: 0.5
+  final_full_frame_epochs: 2
