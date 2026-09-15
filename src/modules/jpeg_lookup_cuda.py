@@ -6,7 +6,7 @@ import triton.language as tl
 
 
 @triton.jit
-def _category_conv(bins, weight, bias, output, height, width, BLOCK: tl.constexpr):
+def _category_conv(bins, weight, bias, output, height, width: tl.constexpr, BLOCK: tl.constexpr):
     position = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     batch_channel = tl.program_id(1)
     channel = batch_channel % 64

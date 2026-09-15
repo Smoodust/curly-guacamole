@@ -4,12 +4,19 @@ from dataclasses import replace
 
 import albumentations as A
 import cv2
+import numpy as np
 import torch
 from albumentations.pytorch import ToTensorV2
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from src.data.data_sample import DataSample
 from src.data.targets import mask_to_tensor
+
+
+_IMAGENET_NORMALIZE = A.Compose([
+    A.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+    ToTensorV2(),
+])
 
 
 def image_resize(sample: DataSample, size: int) -> DataSample:
@@ -20,20 +27,12 @@ def image_resize(sample: DataSample, size: int) -> DataSample:
 
 
 def imagenet_normalize(sample: DataSample) -> DataSample:
-    transform = A.Compose([
-        A.Normalize(
-            mean=IMAGENET_DEFAULT_MEAN,
-            std=IMAGENET_DEFAULT_STD,
-        ),
-        ToTensorV2(),
-    ])
-
-    image = transform(image=sample.image)["image"]
+    image = _IMAGENET_NORMALIZE(image=sample.image)["image"]
     return replace(sample, image=image)
 
 
 class SamplePreprocessor:
-    """Resize image/mask together and produce normalized tensors."""
+    """Resize image/mask together and transport RGB as uint8 CHW."""
 
     def __init__(self, image_size: int):
         self.image_size = image_size
@@ -42,8 +41,8 @@ class SamplePreprocessor:
         return image_resize(sample, self.image_size)
 
     def to_output(self, sample: DataSample) -> dict[str, torch.Tensor]:
-        sample = imagenet_normalize(sample)
-        output = {"image": sample.image}
+        image = torch.from_numpy(np.ascontiguousarray(sample.image.transpose(2, 0, 1)))
+        output = {"image": image}
         if sample.mask is not None:
             mask = mask_to_tensor(sample.mask)
             output["mask"] = mask

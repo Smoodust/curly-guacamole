@@ -12,6 +12,7 @@
 - `notebooks/train.ipynb` — выбор рецепта, проверка бюджета, запуск.
 - `notebooks/experiments.ipynb` — просмотр результатов.
 - `runs/` — checkpoints, resolved configs, метрики, OOF, protocol и notes.
+- `runs/baseline` и `runs/baseline_long` — сохранённые короткий и длинный JPEG640 baseline. Старые эксперименты и аудиты перенесены в `runs/archive/20260915`; таблица исходных путей — `relocation_manifest.json` внутри архива. Исторические snapshots и checkpoint сохраняют исходные имена запусков.
 - `tests/` — проверки поддерживаемого пайплайна.
 - `docs/archive/` — исторические описания экспериментов.
 

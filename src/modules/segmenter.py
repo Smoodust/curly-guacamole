@@ -4,6 +4,7 @@ from torch import nn
 from src.decoders import EMCADDecoder
 from src.modules.forensic_fusion import ForensicFusion
 from src.modules.gate_head import GateHead
+from src.modules.input_normalization import ImageNetInputNormalization
 from src.modules.utils import build_timm_encoder
 
 
@@ -21,6 +22,7 @@ class Segmenter(nn.Module):
         self.segmentation_head = nn.Conv2d(self.decoder.out_channels, 1, kernel_size=1)
         self.classification_head = GateHead(self.channels[-1])
         self.aux_weight = aux_weight
+        self.input_normalization = ImageNetInputNormalization()
 
     def forensic_gate_stats(self) -> dict[str, float]:
         """Detached channel-gate statistics for training logs."""
@@ -30,6 +32,7 @@ class Segmenter(nn.Module):
         if not isinstance(jpeg, (list, tuple)) or len(jpeg) != image.shape[0]:
             raise ValueError('jpeg inputs must contain one native frame per image')
         input_size = image.shape[-2:]
+        image = self.input_normalization(image)
         encoder_features = self.forensic_fusion(list(self.encoder(image)), jpeg=jpeg)
         decoder_features, aux_logits = self.decoder(encoder_features)
         result = {

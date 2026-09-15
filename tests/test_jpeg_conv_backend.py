@@ -7,7 +7,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from src.modules.jpeg_branch import JPEGArtifactModule
 
 
-def test_jpeg_tail_disables_cudnn_for_backward_only_locally():
+def test_jpeg_tail_avoids_convolution_backend_in_forward_and_backward():
     class RecordConvolutionBackend(TorchDispatchMode):
         def __init__(self):
             self.flags = []
@@ -24,8 +24,7 @@ def test_jpeg_tail_disables_cudnn_for_backward_only_locally():
         with RecordConvolutionBackend() as record:
             y = stem.dc_layer1_tail[0](x)
             y.sum().backward()
-        assert len(record.flags) >= 2
-        assert not any(record.flags)
+        assert record.flags == []
         assert torch.backends.cudnn.enabled is True
         with RecordConvolutionBackend() as other:
             stem.dc_layer0_dil[0](torch.randn(1, 21, 16, 24)).sum().backward()
@@ -35,7 +34,9 @@ def test_jpeg_tail_disables_cudnn_for_backward_only_locally():
 
 @pytest.mark.parametrize('device', ['cpu', 'cuda'])
 @pytest.mark.parametrize('amp', [False, True])
-def test_jpeg_tail_preserves_weights_outputs_and_gradients(device, amp):
+@pytest.mark.parametrize('layout', ['contiguous', 'channels_last', 'sliced'])
+def test_jpeg_tail_preserves_weights_outputs_and_gradients(device, amp, layout):
+    torch.manual_seed(42)
     if device == 'cuda' and not torch.cuda.is_available():
         pytest.skip('CUDA unavailable')
     reference = nn.Conv2d(64, 4, 1, bias=False).to(device)
@@ -43,6 +44,10 @@ def test_jpeg_tail_preserves_weights_outputs_and_gradients(device, amp):
     layer.load_state_dict(reference.state_dict(), strict=True)
     reference.load_state_dict(layer.state_dict(), strict=True)
     x = torch.randn(1, 64, 16, 24, device=device, requires_grad=True)
+    if layout == 'channels_last':
+        x = x.detach().to(memory_format=torch.channels_last).requires_grad_()
+    elif layout == 'sliced':
+        x = x.detach()[:, :, :, ::2].requires_grad_()
     expected_x = x.detach().clone().requires_grad_()
     with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=amp):
         with torch.backends.cudnn.flags(enabled=False):
@@ -54,4 +59,6 @@ def test_jpeg_tail_preserves_weights_outputs_and_gradients(device, amp):
         expected.backward(grad)
     torch.testing.assert_close(actual, expected)
     torch.testing.assert_close(x.grad, expected_x.grad)
-    torch.testing.assert_close(layer.weight.grad, reference.weight.grad)
+    # Different reduction orders over spatial positions introduce FP32 noise.
+    tolerance = {} if amp else {'rtol': 1e-5, 'atol': 3e-5}
+    torch.testing.assert_close(layer.weight.grad, reference.weight.grad, **tolerance)

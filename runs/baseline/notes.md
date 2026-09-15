@@ -1,10 +1,10 @@
 ---
 run: baseline
-series: emcad
+series: jpeg640
 parent: null
 baseline: null  # если пусто, используется parent
 change: null
-leaderboard_score: 0.8970629753491126
+leaderboard_score: 0.9170412451803029
 verdict: inconclusive
 source:
 ---

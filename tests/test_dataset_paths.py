@@ -32,7 +32,7 @@ def test_dataset_reads_paths_and_preserves_targets(tmp_path, mode):
     assert output["image"].shape == (3, 32, 32)
     assert output["jpeg"]["available"] is False
     assert "fmap" not in output
-    assert output["image"][0].mean() > output["image"][2].mean()  # RGB conversion
+    assert output["image"][0].float().mean() > output["image"][2].float().mean()  # RGB conversion
     if mode == "test":
         assert "mask" not in output
         assert "label" not in output
