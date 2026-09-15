@@ -1,5 +1,4 @@
 import io
-from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -12,7 +11,7 @@ def test_yaml_scientific_notation_is_loaded_as_numbers(tmp_path):
     from src.config import load_experiment_config
 
     path = tmp_path / 'experiment.yaml'
-    path.write_text('paths: {run_name: scientific}\n'
+    path.write_text('run_name: scientific\n'
                     'train: {encoder_lr: 1e-4, weight_decay: 1e-4}\n'
                     'loss: {dice_weight: 1e-1}\n'
                     'augmentation: {full_frame_probability: 5e-1}\n'
@@ -26,8 +25,8 @@ def test_yaml_scientific_notation_is_loaded_as_numbers(tmp_path):
 
 
 def test_minimal_recipe_has_complete_emcad_protocol():
-    cfg = ExperimentConfig.from_dict({'paths': {'run_name': 'trial'}})
-    assert cfg.model.encoder_name == 'pvt_v2_b2'
+    cfg = ExperimentConfig.from_dict({'run_name': 'trial'})
+    assert cfg.model.encoder == 'pvt_v2_b2'
     assert cfg.dataset.image_size == 640
     assert cfg.dataset.protocol_path
     assert cfg.train.epochs == 6
@@ -45,11 +44,11 @@ def test_minimal_recipe_has_complete_emcad_protocol():
 ])
 def test_old_protocol_switches_are_rejected(section, key, value):
     with pytest.raises(ValueError, match=key):
-        ExperimentConfig.from_dict({'paths': {'run_name': 'trial'}, section: {key: value}})
+        ExperimentConfig.from_dict({'run_name': 'trial', section: {key: value}})
 
 
 def test_default_dct_preserves_pillow_frequency_order():
-    from src.forensic.dct import luma_qtable
+    from src.forensic.jpeg import luma_qtable
 
     q = np.arange(1, 65).reshape(8, 8)
     buf = io.BytesIO()
@@ -60,9 +59,9 @@ def test_default_dct_preserves_pillow_frequency_order():
 def test_snapshots_are_versioned_and_old_runs_are_not_silently_reinterpreted():
     from src.inference.submission import InferenceConfig
 
-    cfg = ExperimentConfig.from_dict({'paths': {'run_name': 'trial'}})
+    cfg = ExperimentConfig.from_dict({'run_name': 'trial'})
     for snapshot in (cfg.to_dict(), cfg.to_flat_dict()):
-        assert snapshot['pipeline_version'] == 'emcad_v1'
+        assert snapshot['pipeline_version'] == 'jpeg640_v1'
         assert InferenceConfig.from_snapshot(snapshot).model == cfg.model
         del snapshot['pipeline_version']
         with pytest.raises(ValueError, match='pipeline'):
@@ -71,7 +70,7 @@ def test_snapshots_are_versioned_and_old_runs_are_not_silently_reinterpreted():
 
 def test_protocol_always_includes_train_originals():
     from src.eval.protocol import EvaluationProtocol
-    cfg = ExperimentConfig.from_dict({'paths': {'run_name': 'trial'}})
+    cfg = ExperimentConfig.from_dict({'run_name': 'trial'})
     protocol = EvaluationProtocol.load(cfg.dataset.protocol_path)
     assert protocol.rows('train').target_kind.eq('original_zero').any()
     assert protocol.provenance()['training_originals'] is True
@@ -79,4 +78,4 @@ def test_protocol_always_includes_train_originals():
 
 def test_protocol_cannot_be_disabled():
     with pytest.raises(ValueError, match='protocol_path'):
-        ExperimentConfig.from_dict({'paths': {'run_name': 'trial'}, 'dataset': {'protocol_path': None}})
+        ExperimentConfig.from_dict({'run_name': 'trial', 'dataset': {'protocol_path': None}})

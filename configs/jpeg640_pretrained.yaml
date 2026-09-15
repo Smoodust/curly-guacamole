@@ -1,7 +1,0 @@
-extends: jpeg576_pretrained.yaml
-paths:
-  run_name: jpeg640_pretrained
-dataset:
-  image_size: 640
-eval:
-  small_mask_weight: 1.6

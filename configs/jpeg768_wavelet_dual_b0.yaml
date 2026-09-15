@@ -1,5 +1,0 @@
-extends: jpeg576_wavelet_dual_b0.yaml
-paths:
-  run_name: jpeg768_wavelet_dual_b0
-dataset:
-  image_size: 768

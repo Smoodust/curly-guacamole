@@ -1,64 +1,28 @@
-# PVT-v2-B2 + EMCAD + forensic branch.
-# Natural DCT, originals in train and original-resolution validation are built in.
-# Machine paths: AIIJC_DATA_PATH / AIIJC_RUNS_PATH in .env or environment.
-
-pipeline_version: emcad_v1
-
-paths:
-  run_name: baseline
-
+# PVT-v2-B2 + native JPEG + LocalFusion + EMCAD; SyncBN is built in.
+# Hardware and machine paths: .env. All resolved values are saved in each run.
+pipeline_version: jpeg640_v1
+run_name: baseline
 seed: 42
-
 model:
-  encoder_name: pvt_v2_b2
-  forensic_channels: [64, 96, 128]
-  aux_weight: 0.4
-  norm: batch
-  use_forensics: true
-  dct_aux_weight: 0.0
-  decoder_kwargs: {}
-  local_image_size: 0
-  luma_image_size: 0
-
+  encoder: pvt_v2_b2
+  jpeg_channels: [64, 96, 128]
+  jpeg_pretrained: DCT_djpeg.pth
 dataset:
   image_size: 640
-  resize_mode: stretch
   protocol_path: runs/validation_protocol_20260908/protocol
-
 train:
-  # Hardware defaults; AIIJC_* environment variables can override these.
-  device: cuda
-  devices: auto
-  distributed_backend: auto
-  workers: 10
-  encoder_lr: 0.0001
-  fmap_lr: 0.0003
-  lr: 0.0003
-  weight_decay: 0.0001
   epochs: 6
-  epoch_size: 24000
+  samples_per_epoch: 24000
+  encoder_lr: 0.0001
+  jpeg_lr: 0.0003
+  head_lr: 0.0003
   negative_fraction: 0.25
-  batch_size: 4
-  accum_steps: 4
-  warmup_frac: 0.05
-  min_lr_factor: 0.02
-  amp: bf16
-  ema_decay: 0.999
-  grad_clip: 1.0
   resume: true
-
-eval:
-  n_bins: 256
-  mask_thresholds: [0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3, 0.325, 0.35, 0.375,
-    0.4, 0.425, 0.45, 0.475, 0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675, 0.7, 0.725, 0.75, 0.775,
-    0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95]
-  cls_thresholds: [0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
-  min_areas: [0.0]
-
 loss:
-  dice_scope: all
   dice_weight: 1.0
-
+  aux_weight: 0.4
+eval:
+  selection_small_mask_weight: 1.6
 augmentation:
   crop_scale_range: [0.35, 1.0]
   jpeg_recompression_probability: 0.3

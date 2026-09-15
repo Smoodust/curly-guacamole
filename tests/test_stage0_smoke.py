@@ -101,7 +101,7 @@ def test_forensic_fusion_constructs():
     fusion = ForensicFusion(
         encoder_strides=[4, 8, 16, 32],
         encoder_channels=[8, 16, 32, 64],
-        forensic_channels=(8, 16, 32),
+        jpeg_channels=(8, 16, 32),
     )
 
     assert set(fusion.fusion_blocks.keys()) == {"8", "16", "32"}
@@ -140,15 +140,14 @@ def test_segmenter_dummy_forward(monkeypatch):
     monkeypatch.setattr(module_utils.timm, "create_model", fake_create_model)
 
     model = Segmenter(
-        encoder_name="fake_encoder",
-        forensic_channels=(8, 16, 32),
+        encoder="fake_encoder",
+        jpeg_channels=(8, 16, 32),
         aux_weight=0.4,
     )
     model.train()
 
     image = torch.zeros(2, 3, 64, 64)
-    forensic_map = torch.zeros(2, 12, 8, 8)
-    out = model(image, forensic_map)
+    out = model(image, jpeg=[{'available': False}] * 2)
 
     assert out["logits"].shape == (2, 1, 64, 64)
     assert out["cls_logits"].shape == (2, 1)

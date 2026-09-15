@@ -10,7 +10,7 @@ def recipe(tmp_path, monkeypatch):
     for key in ('BATCH_SIZE', 'ACCUM_STEPS', 'AMP', 'DEVICE', 'WORKERS', 'DEVICES', 'DISTRIBUTED_BACKEND'):
         monkeypatch.delenv('AIIJC_' + key, raising=False)
     path = tmp_path / 'baseline.yaml'
-    path.write_text('paths: {run_name: baseline}\ntrain: {batch_size: 4}\n')
+    path.write_text('run_name: baseline\ntrain: {batch_size: 4}\n')
     return path
 
 
@@ -20,7 +20,7 @@ def test_runtime_precedence_and_snapshot_preservation(recipe, monkeypatch):
         'AIIJC_DEVICE=cuda:1\nAIIJC_WORKERS=0\n')
     monkeypatch.setenv('AIIJC_BATCH_SIZE', '16')
     cfg = load_experiment_config(recipe)
-    assert (cfg.train.batch_size, cfg.train.accum_steps, cfg.train.amp,
+    assert (cfg.train.batch_size, cfg.train.grad_accum_steps, cfg.train.amp,
             cfg.train.device, cfg.train.workers) == (16, 2, 'fp16', 'cuda:1', 0)
     snapshot = cfg.to_dict()
     assert snapshot['train']['batch_size'] == 16

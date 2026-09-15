@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 import torch
 
+from src.data.collation import ValidationCollator
 from src.data.data_workspace import DataWorkspace
 from src.data.dataset import AIIJCDataset
 
@@ -29,14 +30,15 @@ def test_dataset_reads_paths_and_preserves_targets(tmp_path, mode):
         assert output["original_mask"].shape == (24, 40)
         assert output["original_mask"].all()
     assert output["image"].shape == (3, 32, 32)
-    assert output["fmap"].shape == (12, 4, 4)
+    assert output["jpeg"]["available"] is False
+    assert "fmap" not in output
     assert output["image"][0].mean() > output["image"][2].mean()  # RGB conversion
     if mode == "test":
         assert "mask" not in output
         assert "label" not in output
         assert output["original_size"].tolist() == [24, 40]
         assert output["image_path"] == row["img_path"]
-        batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=1)))
+        batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=1, collate_fn=ValidationCollator())))
         assert batch["original_size"].shape == (1, 2)
     else:
         assert output["mask"].shape == (1, 32, 32)

@@ -1,6 +1,0 @@
-extends: jpeg576_fusion_baseline_weighted_val.yaml
-paths:
-  run_name: jpeg576_fusion_baseline_bn_no_aux_weighted_val
-model:
-  norm: batch
-  aux_weight: 0.0

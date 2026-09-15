@@ -4,8 +4,9 @@ import pandas as pd
 import pytest
 import torch
 
-from src.data.dataset import AIIJCDataset
+from src.data.collation import ValidationCollator
 from src.data.data_workspace import DataWorkspace
+from src.data.dataset import AIIJCDataset
 
 
 @pytest.mark.parametrize('workers', [0, 2])
@@ -15,7 +16,7 @@ def test_profile_preserves_sample_and_reports_stage_times(tmp_path, workers):
     cv2.imwrite(str(workspace.train_root / 'a.png'), np.full((64, 96, 3), 127, np.uint8))
     cv2.imwrite(str(workspace.train_root / 'mask.png'), np.zeros((64, 96), np.uint8))
     rows = pd.DataFrame({'chng_img_path': ['a.png'], 'gt_path': ['mask.png']})
-    dataset = AIIJCDataset(workspace, rows, True, 32, 42, local_image_size=64)
+    dataset = AIIJCDataset(workspace, rows, True, 32, 42)
     expected = dataset[0]
     dataset.profile_data = True
     actual = dataset[0]
@@ -24,7 +25,8 @@ def test_profile_preserves_sample_and_reports_stage_times(tmp_path, workers):
     assert actual.keys() == expected.keys()
     for key in expected:
         torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
-    batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=1, num_workers=workers)))
+    batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=1, num_workers=workers,
+                                                   collate_fn=ValidationCollator())))
     assert batch['_worker_profile'].shape == (1, len(timing))
     assert torch.isfinite(batch['_worker_profile']).all()
 
@@ -40,4 +42,4 @@ def test_worker_summary_excludes_warmup_and_strips_metadata():
     assert all('_worker_profile' not in batch for batch in batches)
     report = summary.report()
     assert report['samples'] == 4
-    assert report['stages']['dct']['mean_ms'] == 3
+    assert report['stages']['jpeg']['mean_ms'] == 3

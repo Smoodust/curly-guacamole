@@ -67,29 +67,3 @@ def test_composed_exif_crop_rotation_and_flips(orientation):
                 actual = JPEGBranch.align(feature, (8, 8, 16, 24, rotations, horizontal, vertical),
                                           8, expected.shape, orientation=orientation, source_size=(32, 48))
                 torch.testing.assert_close(actual[0, 0], torch.tensor(expected.copy(), dtype=torch.float32))
-
-
-@pytest.mark.parametrize('available', [[False, False], [False, True]])
-def test_dct_aux_loss_only_supervises_available_jpeg(available):
-    from src.config import ModelConfig
-    from src.losses import SegmentationLoss
-    from src.training.builders import build_model
-
-    torch.set_num_threads(1)
-    model = build_model(ModelConfig(forensic_mode='jpeg', dct_aux_weight=.1), pretrained=False).train()
-    samples = [dict(bins=torch.zeros(64, 64, dtype=torch.uint8), qtable=torch.ones(8, 8),
-                    geometry=(0, 0, 64, 64, 0, 0, 0), available=valid) for valid in available]
-    out = model(torch.randn(2, 3, 64, 64), jpeg=samples)
-    batch = {'mask': torch.zeros(2, 1, 64, 64), 'label': torch.zeros(2, 1)}
-    criterion = SegmentationLoss(dct_aux_weight=.1)
-    loss = criterion(out, batch)
-    if any(available):
-        selected = torch.tensor(available)
-        reference = criterion({k: v[selected] for k, v in out.items()},
-                              {k: v[selected] for k, v in batch.items()})
-        torch.testing.assert_close(loss.components['dct_aux_bce'], reference.components['dct_aux_bce'])
-        torch.testing.assert_close(loss.components['dct_aux_dice'], reference.components['dct_aux_dice'])
-    else:
-        assert not any(k.startswith('dct_aux') for k in loss.components)
-    assert torch.isfinite(loss.total)
-    loss.total.backward()

@@ -1,5 +1,0 @@
-extends: rgb576_no_aux.yaml
-paths:
-  run_name: rgb576_no_aux_gn
-model:
-  norm: group

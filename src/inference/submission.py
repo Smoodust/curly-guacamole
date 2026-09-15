@@ -1,7 +1,7 @@
 """Build competition submission.csv and predictions/ from a saved run."""
 
 from collections.abc import Iterable
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import numpy as np
@@ -10,10 +10,10 @@ import torch
 from PIL import Image
 from torch.utils.data import DataLoader
 
-from src.config import ModelConfig, PathsConfig, PIPELINE_VERSION
+from src.config import ExperimentConfig, ModelConfig, SnapshotAdapter
+from src.data.collation import ValidationCollator
 from src.data.data_workspace import DataWorkspace
 from src.data.dataset import AIIJCDataset
-from src.data.collation import ValidationCollator
 from src.inference.predict import Prediction, Predictor, ThresholdConfig
 from src.progress import ConsoleProgress
 from src.training.builders import AmpContext, build_model
@@ -81,22 +81,16 @@ class InferenceConfig:
     amp: str
     batch_size: int
     workers: int
-    resize_mode: str = "stretch"
+    aux_weight: float = .4
 
     @classmethod
     def from_snapshot(cls, snapshot: dict) -> "InferenceConfig":
-        """Read both the training engine's flat snapshot and nested experiment configs."""
-        if snapshot.get('pipeline_version') != PIPELINE_VERSION:
-            raise ValueError('Unsupported pipeline snapshot; evaluate historical runs with the main branch')
-        model = snapshot.get("model", snapshot)
-        dataset = snapshot.get("dataset", snapshot)
-        train = snapshot.get("train", snapshot)
-        return cls(
-            ModelConfig.from_dict({f.name: model[f.name] for f in fields(ModelConfig) if f.name in model}),
-            int(dataset["image_size"]), int(snapshot["seed"]), PathsConfig.current_data_path(),
-            train["device"], train["amp"], int(train["batch_size"]), int(train["workers"]),
-            str(dataset.get("resize_mode", "stretch")),
-        )
+        """Normalize current and explicitly supported historical run snapshots."""
+        config = ExperimentConfig.from_dict(SnapshotAdapter.normalize(snapshot))
+        return cls(config.model, config.dataset.image_size, config.seed, config.paths.data_path,
+                   config.train.device, config.train.amp, config.train.batch_size, config.train.workers,
+                   config.loss.aux_weight)
+
 
 
 def create_submission(
@@ -127,14 +121,7 @@ def create_submission(
     test_rows = workspace.test_csv
     template = pd.read_csv(template_path or workspace.test_root / "submission.csv")
     writer = SubmissionWriter(template, test_rows, output_dir)
-    dataset = AIIJCDataset(workspace, test_rows, False, config.image_size, config.seed,
-                           mode="test", resize_mode=config.resize_mode,
-                           local_image_size=config.model.local_image_size,
-                           luma_image_size=config.model.luma_image_size,
-                           wavelet_image_size=config.model.wavelet_image_size,
-                           strided_resize=config.model.strided_resize,
-                           use_forensics=config.model.use_forensics,
-                           forensic_mode=config.model.forensic_mode, jpeg_variant=config.model.jpeg_variant)
+    dataset = AIIJCDataset(workspace, test_rows, False, config.image_size, config.seed, mode='test')
     inference_device = torch.device(device or config.device)
     ConsoleProgress.info(
         f"Submission: изображений {len(test_rows)}, устройство {inference_device}, "
@@ -147,7 +134,7 @@ def create_submission(
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     weights = "ema" if checkpoint.get("ema") is not None else "model"
     ConsoleProgress.info(f"Submission: создание модели и применение весов {weights}")
-    model = build_model(config.model, pretrained=False)
+    model = build_model(config.model, aux_weight=config.aux_weight, pretrained=False)
     model.load_state_dict(checkpoint[weights])
     loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.workers,
                         collate_fn=ValidationCollator())

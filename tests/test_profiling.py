@@ -1,7 +1,6 @@
-import cv2
-import numpy as np
-import torch
+import numpy as np  # noqa: F401 -- Initialize NumPy before torch on Windows.
 import pytest
+import torch
 
 from src.training.profiling import BenchmarkBatches, StageProfiler
 
@@ -45,9 +44,10 @@ def test_profiler_warmup_and_per_update_denominators(monkeypatch):
 
 def test_benchmark_rejects_cpu_before_loading_data():
     from dataclasses import replace
+
     from src.config import load_experiment_config
     from src.training.profiling import benchmark
-    cfg = load_experiment_config('configs/local.yaml')
+    cfg = load_experiment_config('configs/baseline.yaml')
     cfg = replace(cfg, train=replace(cfg.train, device='cpu'))
     with pytest.raises(ValueError, match='CUDA'):
         benchmark(cfg)
@@ -57,13 +57,13 @@ def test_worker_sweep_preserves_hardware_settings_and_ranks_loader_time(monkeypa
     from src.config import load_experiment_config
     from src.training import profiling
 
-    config = load_experiment_config('configs/local.yaml')
+    config = load_experiment_config('configs/baseline.yaml')
     calls = []
 
     def fake_benchmark(cfg, **kwargs):
         calls.append(cfg.train.workers)
         assert cfg.train.batch_size == config.train.batch_size
-        assert cfg.train.accum_steps == config.train.accum_steps
+        assert cfg.train.grad_accum_steps == config.train.grad_accum_steps
         assert cfg.train.amp == config.train.amp
         return {'results': {'loader': {'wall_ms_per_batch': {2: 400, 4: 300, 10: 500}[cfg.train.workers]},
                             'gpu_replay': {'wall_ms_per_batch': 200}}}
@@ -84,16 +84,17 @@ def test_worker_sweep_rejects_invalid_arguments(workers, repeats):
 
 def test_compare_transfer_cli_runs_all_variants_and_saves_report(tmp_path, monkeypatch):
     import json
+
     from src.training import profiling
 
     called = []
-    def fake_benchmark(config, *, transport, batches, warmup):
-        called.append((transport, batches, warmup))
+    def fake_benchmark(config, *, asynchronous_transfer, batches, warmup):
+        called.append((asynchronous_transfer, batches, warmup))
         return {'results': {'loader': {'wall_ms_per_batch': 300}}}
 
     monkeypatch.setattr(profiling, 'benchmark', fake_benchmark)
     output = tmp_path / 'transfer.json'
     monkeypatch.setattr('sys.argv', ['profiling', '--compare-transfer', '--batches', '64', '--output', str(output)])
     profiling.main()
-    assert called == [(mode, 64, 8) for mode in ('legacy', 'compact', 'optimized')]
-    assert list(json.loads(output.read_text())) == ['legacy', 'compact', 'optimized']
+    assert called == [(mode, 64, 8) for mode in (False, True)]
+    assert list(json.loads(output.read_text())) == ['synchronous', 'asynchronous']

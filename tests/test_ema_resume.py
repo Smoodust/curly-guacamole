@@ -12,7 +12,7 @@ from src.training.runs import Run
 
 @pytest.mark.parametrize('save_count', [False, True])
 def test_resumed_ema_keeps_history_on_first_update(tmp_path, save_count):
-    config = load_experiment_config('configs/jpeg576.yaml')
+    config = load_experiment_config('configs/baseline.yaml')
     config = replace(config, train=replace(config.train, device='cpu', amp='off', resume=True))
     model = torch.nn.Linear(1, 1, bias=False)
     with torch.no_grad():

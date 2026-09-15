@@ -1,5 +1,0 @@
-extends: rgb576_strided.yaml
-paths:
-  run_name: rgb576_residual_paper
-model:
-  resize_variant: residual_paper

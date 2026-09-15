@@ -97,26 +97,17 @@ def test_artifact_removes_dense_first_convolution_from_flop_budget():
     assert counter.get_total_flops() / 1e9 == pytest.approx(0.536870912)
 
 
-def test_640_recipe_preserves_training_and_fits_full_hd_budget():
-    from dataclasses import replace
-
+def test_baseline_fits_full_hd_budget_and_requires_native_size():
     from src.budget import count_gflops
     from src.config import load_experiment_config
-    from src.inference.submission import InferenceConfig
     from src.training.builders import build_model
 
-    base = load_experiment_config('configs/jpeg576_pretrained.yaml')
-    config = load_experiment_config('configs/jpeg640_pretrained.yaml')
-    assert config.dataset == replace(base.dataset, image_size=640)
-    assert config.model == base.model
-    assert config.train == base.train and config.loss == base.loss
-    assert config.augmentation == base.augmentation
-    assert config.eval == replace(base.eval, small_mask_weight=1.6)
-    assert config.paths.run_name == 'jpeg640_pretrained'
-    assert InferenceConfig.from_snapshot(config.to_flat_dict()).model == config.model
+    config = load_experiment_config('configs/baseline.yaml')
+    assert config.dataset.image_size == 640
     with torch.device('meta'):
         model = build_model(config.model, pretrained=False)
+        with pytest.raises(ValueError, match='native_size'):
+            count_gflops(model, 640)
         small = count_gflops(model, 640, native_size=(1024, 1024))
         large = count_gflops(model, 640, native_size=(1080, 1920))
-    assert small == pytest.approx(91.23023752)
-    assert large == pytest.approx(93.035672912)
+    assert 0 < small < large < 100

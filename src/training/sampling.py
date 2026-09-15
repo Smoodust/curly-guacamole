@@ -1,58 +1,7 @@
 import math
 
-import numpy as np
 import torch
 from torch.utils.data import Sampler
-
-
-class FocusCoverageSampler(Sampler):
-    """Cover every focus positive, then replay other positives and negatives."""
-
-    def __init__(self, focus, negative, num_samples, focus_fraction=.5, negative_fraction=.25):
-        focus = np.asarray(focus, dtype=bool)
-        negative = np.asarray(negative, dtype=bool)
-        if focus.shape != negative.shape or (focus & negative).any():
-            raise ValueError('focus must contain positive train rows only')
-        self.pools = [torch.from_numpy(np.flatnonzero(mask))
-                      for mask in (focus, ~focus & ~negative, negative)]
-        n_focus = round(num_samples * focus_fraction)
-        n_negative = round(num_samples * negative_fraction)
-        self.counts = [n_focus, num_samples - n_focus - n_negative, n_negative]
-        if any(len(pool) == 0 for pool in self.pools):
-            raise ValueError('focus, other positives and negatives must all be present')
-        if n_focus < len(self.pools[0]):
-            raise ValueError('epoch budget cannot cover every focus row')
-        self.num_samples = num_samples
-        self.generator = None
-
-    def __len__(self):
-        return self.num_samples
-
-    def __iter__(self):
-        focus, other, negative = self.pools
-        repeats = math.ceil(self.counts[0] / len(focus))
-        indices = [torch.cat([focus[torch.randperm(len(focus), generator=self.generator)]
-                              for _ in range(repeats)])[:self.counts[0]]]
-        for pool, count in zip((other, negative), self.counts[1:]):
-            indices.append(pool[torch.randint(len(pool), (count,), generator=self.generator)])
-        indices = torch.cat(indices)
-        return iter(indices[torch.randperm(len(indices), generator=self.generator)].tolist())
-
-
-class UniformMaskAreaSampler(torch.utils.data.WeightedRandomSampler):
-    """Equal probability for empty masks and five positive area buckets."""
-
-    def __init__(self, mask_area, num_samples):
-        area = np.asarray(mask_area, dtype=float)
-        if area.ndim != 1 or not np.isfinite(area).all() or ((area < 0) | (area > 1)).any():
-            raise ValueError('mask_area must contain finite fractions in [0, 1]')
-        buckets = np.digitize(area, [.01, .03, .08, .20]) + 1
-        buckets[area == 0] = 0
-        counts = np.bincount(buckets, minlength=6)
-        if (counts == 0).any():
-            raise ValueError('uniform_mask_area requires all six mask area categories')
-        weights = 1.0 / counts[buckets]
-        super().__init__(torch.as_tensor(weights, dtype=torch.double), num_samples, replacement=True)
 
 
 class FinalFullTrainSampler(Sampler):

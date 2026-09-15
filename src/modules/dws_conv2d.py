@@ -1,6 +1,6 @@
 from torch import nn
 
-from src.modules.utils import make_norm
+from src.decoders.layers import make_norm
 
 
 class DWSConv2d(nn.Module):

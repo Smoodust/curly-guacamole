@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import torch
 
-from src.training.metric import AICAccumulator
 from src.training import validation
+from src.training.metric import AICAccumulator
 
 
 @pytest.mark.parametrize('device', ['cpu', pytest.param('cuda', marks=pytest.mark.skipif(

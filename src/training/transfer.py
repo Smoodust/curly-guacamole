@@ -23,9 +23,7 @@ class BatchTransfer:
         for value in result.values():
             if torch.is_tensor(value) and value.is_cuda:
                 value.record_stream(compute)
-        for value in result.get('native_rgb', []):
-            value.record_stream(compute)
-        for sample in result.get('jpeg', []) + result.get('paired_jpeg', []):
+        for sample in result.get('jpeg', []):
             for value in sample.values():
                 if torch.is_tensor(value) and value.is_cuda:
                     value.record_stream(compute)
@@ -41,8 +39,4 @@ class BatchTransfer:
                   for key, value in batch.items()}
         if 'jpeg' in batch:
             result['jpeg'] = self.move_jpeg(batch['jpeg'], self.device)
-        if 'paired_jpeg' in batch:
-            result['paired_jpeg'] = self.move_jpeg(batch['paired_jpeg'], self.device)
-        if 'native_rgb' in batch:
-            result['native_rgb'] = [image.to(self.device, non_blocking=True) for image in batch['native_rgb']]
         return result

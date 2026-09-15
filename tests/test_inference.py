@@ -80,11 +80,11 @@ def test_run_submission_prefers_ema_preserves_template_and_sizes(tmp_path, monke
             super().__init__()
             self.bias = torch.nn.Parameter(torch.tensor(0.))
 
-        def forward(self, image, fmap):
+        def forward(self, image, **kwargs):
             return {"logits": self.bias.expand(len(image), 1, 8, 8),
                     "cls_logits": self.bias.expand(len(image), 1)}
 
-    def model_factory(config, *, pretrained):
+    def model_factory(config, *, pretrained, aux_weight):
         assert pretrained is False
         return DummyModel()
 

@@ -85,9 +85,9 @@ def _distributed_epoch_worker(rank, folder, device='cpu'):
                             world_size=2, timeout=timedelta(seconds=40))
     try:
         runtime = TrainingRuntime(device, rank, 2)
-        config = ExperimentConfig(paths=PathsConfig(folder, folder, 'test'),
+        config = ExperimentConfig(run_name='test', paths=PathsConfig(folder, folder),
                                   train=TrainConfig(device=device, workers=0, amp='off',
-                                                    accum_steps=2, grad_clip=0))
+                                                    grad_accum_steps=2, grad_clip=0))
         model = TinyDistributedModel().to(device)
         optimizer = torch.optim.SGD(model.parameters(), lr=.1)
         ema = build_ema(config.train, model)
@@ -178,7 +178,7 @@ def _distributed_runner_worker(rank, folder):
 
     import src.training.engine as engine
     from src.training.distributed import TrainingRuntime
-    from tests.test_focal_epoch_completion import configure_tiny_run
+    from tests.test_epoch_completion import configure_tiny_run
 
     folder = Path(folder)
     torch.set_num_threads(1)
@@ -187,7 +187,7 @@ def _distributed_runner_worker(rank, folder):
     try:
         with pytest.MonkeyPatch.context() as patch:
             config = configure_tiny_run(folder, patch)
-            config = replace(config, train=replace(config.train, resume=True, epochs=2, full_train_epochs=2),
+            config = replace(config, train=replace(config.train, resume=True, epochs=2, full_pass_epochs=2),
                              augmentation=replace(config.augmentation, final_full_frame_epochs=2))
             runtime = TrainingRuntime('cpu', rank, 2)
             validation = engine.validate
@@ -200,7 +200,7 @@ def _distributed_runner_worker(rank, folder):
             patch.setattr(engine, 'validate', failing_validation)
             with pytest.raises(RuntimeError, match='intentional validation interruption'):
                 engine.ExperimentRunner(config, runtime=runtime).run()
-            checkpoint = torch.load(folder / config.paths.run_name / 'ckpt/last.pt', weights_only=True)
+            checkpoint = torch.load(folder / config.run_name / 'ckpt/last.pt', weights_only=True)
             assert checkpoint['samples'] == 2
             assert checkpoint['validation_complete'] is False
             assert not any(key.startswith('module.') for key in checkpoint['model'])
@@ -226,7 +226,7 @@ def _launch_test_worker(payload_path, rank):
     from pathlib import Path
 
     from src.training.distributed import _worker
-    from tests.test_focal_epoch_completion import configure_tiny_run
+    from tests.test_epoch_completion import configure_tiny_run
 
     with pytest.MonkeyPatch.context() as patch:
         configure_tiny_run(Path(payload_path).parent, patch)
@@ -238,7 +238,7 @@ def test_automatic_launcher_preserves_paths_and_returns_run(tmp_path, monkeypatc
     import sys
 
     from src.training.distributed import TrainingRuntime
-    from tests.test_focal_epoch_completion import configure_tiny_run
+    from tests.test_epoch_completion import configure_tiny_run
 
     config = configure_tiny_run(tmp_path, monkeypatch)
     popen = subprocess.Popen
@@ -256,44 +256,12 @@ def test_automatic_launcher_preserves_paths_and_returns_run(tmp_path, monkeypatc
 
     monkeypatch.setattr(TrainingRuntime, 'selected_devices', lambda config: (0, 1))
     run = ExperimentRunner(config).run()
-    assert run.dir == tmp_path / config.paths.run_name
+    assert run.dir == tmp_path / config.run_name
     assert run.summary['training_complete'] is True
     assert run.load_state()['cfg']['world_size'] == 2
     assert not list(tmp_path.glob('.ddp-*'))
 
 
-def test_resume_restores_this_ranks_rng(tmp_path, monkeypatch):
-    from src.config import ExperimentConfig, PathsConfig
-    from src.training.base import TorchRNGState
-    from src.training.builders import build_amp, build_ema
-    from src.training.distributed import TrainingRuntime
-    from src.training.engine import EpochTrainResult, ExperimentRunner, TrainingState
-    from src.training.runs import Run
-
-    cfg = ExperimentConfig(paths=PathsConfig(tmp_path, tmp_path, 'rng'),
-                           train=TrainConfig(device='cpu', resume=True, amp='off'))
-    cfg = replace(cfg, model=replace(cfg.model, forensic_contrastive_dim=4),
-                  loss=replace(cfg.loss, forensic_intra_weight=.1))
-    model = TinyDistributedModel()
-    ema = build_ema(cfg.train, model)
-    optimizer = torch.optim.SGD(model.parameters(), lr=.1)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.)
-    scaler = build_amp(cfg.train).scaler()
-    run = Run.create(tmp_path, 'rng', tensorboard=False)
-    rng_states = []
-    for rank in range(2):
-        torch.manual_seed(rank + 50)
-        rng_states.append(TorchRNGState.capture())
-    state = TrainingState(pending_train_result=EpochTrainResult(1., 0, 2))
-    ExperimentRunner._save_training_checkpoint(run, model, ema, optimizer, scheduler, scaler,
-                                               0, state, cfg.to_flat_dict(),
-                                               validation_complete=True, rng_states=rng_states)
-    restored = []
-    monkeypatch.setattr(TorchRNGState, 'restore', restored.append)
-    runner = ExperimentRunner(cfg, runtime=TrainingRuntime('cpu', 1, 2))
-    runner._resume_if_needed(run=run, model=model, ema=ema, optimizer=optimizer,
-                             scheduler=scheduler, scaler=scaler)
-    assert torch.equal(restored[0]['cpu'], rng_states[1]['cpu'])
 
 
 def test_launcher_terminates_sibling_on_worker_failure(tmp_path, monkeypatch):
@@ -303,7 +271,7 @@ def test_launcher_terminates_sibling_on_worker_failure(tmp_path, monkeypatch):
     from src.config import ExperimentConfig, PathsConfig
     from src.training.distributed import TrainingRuntime
 
-    config = ExperimentConfig(paths=PathsConfig(tmp_path, tmp_path, 'failure'),
+    config = ExperimentConfig(run_name='failure', paths=PathsConfig(tmp_path, tmp_path),
                                train=TrainConfig(device='cpu'))
     popen = subprocess.Popen
     processes = []
@@ -333,7 +301,7 @@ def test_cuda_training_runtime_with_amp(precision):
     from src.training.engine import train_one_epoch
     from tests.test_engine import CountingScheduler, _cpu_config
 
-    config = _cpu_config(accum_steps=2)
+    config = _cpu_config(grad_accum_steps=2)
     config = replace(config, train=replace(config.train, device='cuda:0', amp=precision))
     model = TinyDistributedModel().cuda()
     ema = build_ema(config.train, model)

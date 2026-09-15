@@ -1,5 +1,0 @@
-extends: rgb576.yaml
-paths:
-  run_name: rgb576_strided
-model:
-  strided_resize: true

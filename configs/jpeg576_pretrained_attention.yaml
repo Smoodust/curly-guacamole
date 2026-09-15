@@ -1,5 +1,0 @@
-extends: jpeg576_pretrained.yaml
-paths:
-  run_name: jpeg576_pretrained_attention
-model:
-  jpeg_variant: attention

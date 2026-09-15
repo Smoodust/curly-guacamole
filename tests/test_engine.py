@@ -18,7 +18,7 @@ def _cpu_config(**train_overrides):
     return replace(
         config,
         train=train,
-        model=replace(config.model, aux_weight=0.0),
+        loss=replace(config.loss, aux_weight=0.0),
         eval=replace(
             config.eval,
             n_bins=16,
@@ -63,7 +63,7 @@ def test_train_one_epoch_flushes_last_accumulation_block():
                 "cls_logits": logits.mean(dim=(2, 3)),
             }
 
-    config = _cpu_config(accum_steps=2)
+    config = _cpu_config(grad_accum_steps=2)
     model = TinySegmenter()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     scheduler = CountingScheduler()
@@ -181,7 +181,7 @@ def test_resume_state_starts_after_saved_epoch(tmp_path):
         def info(self, message) -> None:
             self.messages.append(message)
 
-    config = _cpu_config(resume=True, epoch_size=5)
+    config = _cpu_config(resume=True, samples_per_epoch=5)
     runner = ExperimentRunner(config)
     run_dir = tmp_path / "run"
     (run_dir / "ckpt").mkdir(parents=True)

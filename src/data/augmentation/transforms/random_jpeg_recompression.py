@@ -7,7 +7,7 @@ import numpy as np
 
 from src.data.augmentation.base import AIIJCAugmentation, AugmentationStage, require_rng
 from src.data.data_sample import DataSample
-from src.forensic.dct import luma_qtable
+from src.forensic.jpeg import luma_qtable
 from src.forensic.jpeg_input import JPEGInput
 
 

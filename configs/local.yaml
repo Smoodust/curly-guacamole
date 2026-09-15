@@ -1,5 +1,0 @@
-extends: positive_dice.yaml
-paths:
-  run_name: local
-model:
-  local_image_size: 1024

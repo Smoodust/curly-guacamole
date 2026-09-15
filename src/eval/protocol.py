@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 
 import pandas as pd
-import global_config
 
+import global_config
 from src.eval.splits import make_stratified_val_folds
 
 

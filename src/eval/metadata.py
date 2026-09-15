@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from src.progress import ConsoleProgress
 from src.data.data_workspace import DataWorkspace
 from src.data.utils import read_image
+from src.progress import ConsoleProgress
 
 HASH_PREFIX = re.compile(r"^[0-9a-f]{12}_")
 DATASET_PREFIX = re.compile(r"^(coco|raise|openimages)_")

@@ -2,7 +2,7 @@ import numpy as np  # noqa: F401 -- initialize NumPy's runtime before torch on W
 import pytest
 import torch
 
-from src.config import ModelConfig, load_experiment_config
+from src.config import load_experiment_config
 from src.modules.jpeg_branch import JPEGArtifactModule
 
 
@@ -23,16 +23,14 @@ def test_load_pretrained_stem_strictly(tmp_path):
 
 
 def test_pretrained_recipe_and_builder_gate(monkeypatch):
+    from dataclasses import replace
+
     import src.modules.segmenter as segmenter
+    from src.modules.sync_batchnorm import SynchronizedBatchNorm
     from src.training.builders import build_model
 
-    config = load_experiment_config('configs/jpeg576_pretrained.yaml')
-    baseline = load_experiment_config('configs/jpeg576.yaml')
+    config = load_experiment_config('configs/baseline.yaml')
     assert config.model.jpeg_pretrained == 'DCT_djpeg.pth'
-    assert baseline.model.jpeg_pretrained is None
-    assert config.train == baseline.train
-    assert config.dataset == baseline.dataset
-    assert config.loss == baseline.loss
     calls = []
 
     class FakeModel:
@@ -44,14 +42,14 @@ def test_pretrained_recipe_and_builder_gate(monkeypatch):
             calls.append(path)
 
     monkeypatch.setattr(segmenter, 'Segmenter', FakeModel)
+    monkeypatch.setattr(SynchronizedBatchNorm, 'apply', lambda model: model)
     build_model(config.model, pretrained=False)
     assert not calls
     build_model(config.model, pretrained=True)
     assert len(calls) == 1 and calls[0].is_absolute()
-    build_model(baseline.model, pretrained=True)
+    build_model(replace(config.model, jpeg_pretrained=None), pretrained=True)
     assert len(calls) == 1
-    with pytest.raises(ValueError, match='jpeg'):
-        ModelConfig(jpeg_pretrained='weights.pth')
+
 
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])
 def test_load_legacy_checkpoint_with_numpy_metric(tmp_path, dtype):

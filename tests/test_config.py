@@ -8,28 +8,27 @@ from src.config import ExperimentConfig, load_experiment_config
 
 def test_inheritance_merges_nested_sections_and_replaces_lists(tmp_path, monkeypatch):
     base = load_experiment_config("configs/baseline.yaml").to_dict()
-    base["model"]["decoder_kwargs"] = {"nested": {"keep": 1, "change": 2}}
     (tmp_path / "base.yaml").write_text(yaml.safe_dump(base), encoding="utf-8")
     folder = tmp_path / "children"
     folder.mkdir()
     (folder / "middle.yaml").write_text(
         "extends: ../base.yaml\ntrain:\n  batch_size: 2\n"
-        "model:\n  decoder_kwargs:\n    nested:\n      change: 3\n", encoding="utf-8",
+        "model:\n  jpeg_channels: [32, 64, 96]\n", encoding="utf-8",
     )
     child = folder / "child.yaml"
     child.write_text(
-        "extends: middle.yaml\npaths:\n  run_name: child\n"
-        "train:\n  lr: 0.001\neval:\n  mask_thresholds: [0.3, 0.7]\n",
+        "extends: middle.yaml\nrun_name: child\n"
+        "train:\n  head_lr: 0.001\neval:\n  mask_thresholds: [0.3, 0.7]\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path.parent)
     config = load_experiment_config(child)
-    assert config.paths.run_name == "child"
+    assert config.run_name == "child"
     assert config.train.batch_size == 2
-    assert config.train.lr == 0.001
+    assert config.train.head_lr == 0.001
     assert config.train.epochs == base["train"]["epochs"]
     assert config.eval.mask_thresholds == (0.3, 0.7)
-    assert config.model.decoder_kwargs == {"nested": {"keep": 1, "change": 3}}
+    assert config.model.jpeg_channels == (32, 64, 96)
     assert "extends" not in config.to_dict()
     assert ExperimentConfig.from_dict(config.to_dict()) == config
     assert load_experiment_config(tmp_path / "base.yaml").train.batch_size == base["train"]["batch_size"]
@@ -81,7 +80,8 @@ def test_portable_config_uses_machine_paths(tmp_path, monkeypatch):
     import yaml
 
     raw = load_experiment_config("configs/baseline.yaml").to_dict()
-    raw["paths"] = {"run_name": "portable"}
+    raw["paths"] = {}
+    raw["run_name"] = "portable"
     config_path = tmp_path / "experiment.yaml"
     config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -94,7 +94,7 @@ def test_portable_config_uses_machine_paths(tmp_path, monkeypatch):
         config = load_experiment_config(config_path)
         assert config.paths.data_path == data_path
         assert config.paths.runs_path == runs_path
-        assert config.paths.run_name == "portable"
+        assert config.run_name == "portable"
 
 
 def test_saved_paths_do_not_override_machine_settings(tmp_path, monkeypatch):
@@ -110,7 +110,8 @@ def test_machine_defaults_are_independent_of_yaml_location_and_cwd(tmp_path, mon
     import global_config
 
     raw = load_experiment_config("configs/baseline.yaml").to_dict()
-    raw["paths"] = {"run_name": "portable"}
+    raw["paths"] = {}
+    raw["run_name"] = "portable"
     monkeypatch.delenv("AIIJC_DATA_PATH", raising=False)
     monkeypatch.delenv("AIIJC_RUNS_PATH", raising=False)
     monkeypatch.setattr(global_config, "DATA_PATH", "data")
@@ -127,7 +128,8 @@ def test_experiment_yamls_have_no_machine_paths():
 
     for path in Path("configs").glob("*.yaml"):
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert set(raw["paths"]) == {"run_name"}, path
+        assert "paths" not in raw, path
+        assert raw["run_name"], path
         load_experiment_config(path)
 
 
@@ -157,10 +159,10 @@ def test_load_baseline_config(monkeypatch):
 
     assert config.paths.data_path == Path("D:/Challenges/AIIJC2026/data")
     assert config.paths.runs_path == Path("runs").resolve()
-    assert config.paths.run_name == "baseline"
+    assert config.run_name == "baseline"
     assert config.seed == 42
-    assert config.model.encoder_name == "pvt_v2_b2"
-    assert config.model.forensic_channels == (64, 96, 128)
+    assert config.model.encoder == "pvt_v2_b2"
+    assert config.model.jpeg_channels == (64, 96, 128)
     assert config.augmentation.crop_scale_range == (0.35, 1.0)
     assert config.dataset.image_size == 640
     assert config.train.amp == "bf16"
@@ -175,8 +177,8 @@ def test_config_to_dict_keeps_current_runtime_shape():
     config = load_experiment_config("configs/baseline.yaml")
     runtime = config.to_dict()
 
-    assert set(runtime) == {"pipeline_version", "paths", "seed", "model", "augmentation", "dataset", "train", "eval", "loss"}
-    assert runtime["model"]["encoder_name"] == "pvt_v2_b2"
+    assert set(runtime) == {"pipeline_version", "run_name", "paths", "seed", "model", "augmentation", "dataset", "train", "eval", "loss"}
+    assert runtime["model"]["encoder"] == "pvt_v2_b2"
     assert runtime["dataset"]["image_size"] == 640
     assert "augmentations" not in runtime
     assert "img_size" not in runtime["dataset"]
@@ -188,16 +190,16 @@ def test_config_to_flat_dict_is_snapshot_friendly():
 
     assert plain["run_name"] == "baseline"
     assert plain["seed"] == 42
-    assert plain["encoder_name"] == "pvt_v2_b2"
+    assert plain["encoder"] == "pvt_v2_b2"
     assert plain["image_size"] == 640
     assert plain["n_bins"] == 256
 
 
 def test_unknown_config_key_fails_early():
     raw = load_experiment_config("configs/baseline.yaml").to_dict()
-    raw["model"]["encoder"] = raw["model"].pop("encoder_name")
+    raw["model"]["encoder_name"] = raw["model"].pop("encoder")
 
-    with pytest.raises(ValueError, match="unknown keys in model: encoder"):
+    with pytest.raises(ValueError, match="unknown keys in model: encoder_name"):
         ExperimentConfig.from_dict(raw, base_dir=Path("configs"))
 
 

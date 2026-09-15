@@ -4,10 +4,9 @@ from dataclasses import replace
 
 import numpy as np
 
-from src.data.augmentation.base import AIIJCAugmentation, AugmentationStage, require_fmap, require_rng
+from src.data.augmentation.base import AIIJCAugmentation, AugmentationStage, require_rng
 from src.data.data_sample import DataSample
 from src.data.utils import align8
-from src.forensic.dct import crop_fmaps
 
 
 class RandomDCTAlignedCrop(AIIJCAugmentation):
@@ -41,7 +40,6 @@ class RandomDCTAlignedCrop(AIIJCAugmentation):
             return sample
 
         rng = require_rng(rng, AugmentationStage.AFTER_FORENSICS)
-        fmap = require_fmap(sample)
         height, width = sample.image.shape[:2]
         top, left, side = self.sample_crop(height, width, rng)
         if (sample.mask is not None and self.foreground_probability > 0
@@ -54,7 +52,6 @@ class RandomDCTAlignedCrop(AIIJCAugmentation):
                 left = self._origin_containing(int(x), width, side, rng)
 
         image = sample.image[top:top + side, left:left + side]
-        fmap = crop_fmaps(fmap, top, left, side, side)
         mask = (
             sample.mask[top:top + side, left:left + side]
             if sample.mask is not None
@@ -62,7 +59,7 @@ class RandomDCTAlignedCrop(AIIJCAugmentation):
         )
 
         jpeg = sample.jpeg.crop(top, left, side, side) if sample.jpeg is not None else None
-        return replace(sample, image=image, mask=mask, fmap=fmap, jpeg=jpeg)
+        return replace(sample, image=image, mask=mask, jpeg=jpeg)
 
     @staticmethod
     def _origin_containing(pixel: int, length: int, side: int, rng) -> int:

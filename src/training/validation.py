@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from src.data.letterbox import Letterbox
+from src.data.geometry import restore_probability
 from src.losses import LossMeter, SegmentationLoss
 from src.progress import ConsoleProgress
 from src.training.distributed import TrainingRuntime
@@ -62,9 +62,9 @@ def validate(
             raise RuntimeError('Validation failed: ' + '; '.join(error for error in errors if error))
         runtime.reduce_meter(meter)
         shards = runtime.gather_to_main(ValidationHistograms.pack(acc))
-        acc = (ValidationHistograms.merge(shards, config.eval.n_bins, config.eval.small_mask_weight)
+        acc = (ValidationHistograms.merge(shards, config.eval.n_bins, config.eval.selection_small_mask_weight)
                if runtime.is_main else AICAccumulator(n_bins=config.eval.n_bins,
-                                                      small_mask_weight=config.eval.small_mask_weight))
+                                                      small_mask_weight=config.eval.selection_small_mask_weight))
     else:
         acc, meter = _collect_validation(model, loader, amp, config, device)
     tuned, fixed = runtime.main_call(_score_validation, acc, config, thresholds)
@@ -105,7 +105,7 @@ def _score_validation(acc, config, thresholds):
 def _collect_validation(model, loader, amp, config, device, *, progress=True):
     model.eval()
     n_bins = config.eval.n_bins
-    acc = AICAccumulator(n_bins=n_bins, small_mask_weight=config.eval.small_mask_weight)
+    acc = AICAccumulator(n_bins=n_bins, small_mask_weight=config.eval.selection_small_mask_weight)
     histograms = DeviceHistogramAccumulator(acc, device)
     meter = LossMeter()
     criterion = SegmentationLoss(**config.loss.to_dict()).eval()
@@ -113,21 +113,14 @@ def _collect_validation(model, loader, amp, config, device, *, progress=True):
     batches = ConsoleProgress.iterate(loader, 'Валидация, батчи') if progress else loader
     for batch in batches:
         images = batch["image"].to(device, non_blocking=True, memory_format=torch.channels_last)
-        fmap = batch["fmap"].to(device, non_blocking=True) if "fmap" in batch else None
 
         with amp.autocast():
-            kwargs = {"valid_mask": batch["valid_mask"].to(device)} if "valid_mask" in batch else {}
-            if 'jpeg' in batch:
-                kwargs['jpeg'] = BatchTransfer.move_jpeg(batch['jpeg'], device)
-            if 'local_input' in batch:
-                kwargs['local_input'] = batch['local_input'].to(device, non_blocking=True)
-            if 'native_rgb' in batch:
-                kwargs['native_rgb'] = [rgb.to(device, non_blocking=True) for rgb in batch['native_rgb']]
-            out = model(images, fmap, **kwargs)
+            kwargs = {'jpeg': BatchTransfer.move_jpeg(batch['jpeg'], device)} if 'jpeg' in batch else {}
+            out = model(images, **kwargs)
 
         # Comparable main-head loss on the network grid; AIC can use original GT.
         loss_batch = {key: batch[key].to(device) for key in
-                      ("mask", "label", "valid_mask", "boundary_distance") if key in batch}
+                      ("mask", "label") if key in batch}
         meter.update(criterion(out, loss_batch), len(images))
         probs = torch.sigmoid(out["logits"].float())
         cls = torch.sigmoid(out["cls_logits"].float()).reshape(-1)
@@ -135,8 +128,7 @@ def _collect_validation(model, loader, amp, config, device, *, progress=True):
         if "original_mask" not in batch:
             raise ValueError("original validation requires original_mask from the dataset")
         for index, mask in enumerate(batch["original_mask"]):
-            content = batch["content_size"][index] if "content_size" in batch else None
-            restored = Letterbox.restore(probs[index:index + 1], mask.shape[-2:], content)
+            restored = restore_probability(probs[index:index + 1], mask.shape[-2:])
             histograms.update(restored, mask.to(device, non_blocking=True).reshape(1, 1, *mask.shape[-2:]),
                               cls[index:index + 1])
 

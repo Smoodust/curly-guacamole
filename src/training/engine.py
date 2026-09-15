@@ -11,14 +11,13 @@ import torch
 from torch import nn
 
 from src.budget import count_gflops
-from src.config import PIPELINE_VERSION, ExperimentConfig, LossConfig
+from src.config import ExperimentConfig, SnapshotAdapter
 from src.data.data_workspace import DataWorkspace
 from src.eval.diagnostics import EvaluationReport
 from src.eval.protocol import EvaluationProtocol
-from src.forensic.dct.constants import CHANNELS as FMAP_CHANNELS
 from src.losses import LossMeter, SegmentationLoss
 from src.progress import ConsoleProgress
-from src.training.base import TorchRNGState, set_random_seed
+from src.training.base import set_random_seed
 from src.training.builders import (
     AmpContext,
     build_amp,
@@ -84,14 +83,9 @@ class ExperimentRunner:
     def _run(self) -> Run:
         cfg = self.config
         runtime = self.runtime
-        if cfg.train.jpeg_pair_training and runtime.distributed:
-            raise ValueError('JPEG pair fine-tuning currently supports one GPU only')
-        if cfg.train.jpeg_pair_training:
-            ConsoleProgress.info('JPEG pairs: full frames without other augmentations; only JPEG branch trains; '
-                                 'frozen teacher, two student views per sampled row')
-        runtime.validate_sync_batchnorm(cfg.model.sync_batchnorm)
+        runtime.validate_sync_batchnorm(True)
         self._check_resume_protocol()
-        ConsoleProgress.info(f"Эксперимент {cfg.paths.run_name}: device={self.device}, amp={cfg.train.amp}, seed={cfg.seed}")
+        ConsoleProgress.info(f"Эксперимент {cfg.run_name}: device={self.device}, amp={cfg.train.amp}, seed={cfg.seed}")
         set_random_seed(cfg.seed)
 
         ConsoleProgress.info("Подготовка метаданных и train/val разбиения")
@@ -103,24 +97,21 @@ class ExperimentRunner:
         model = self._build_training_model()
         ConsoleProgress.info("Модель готова; подсчёт GFLOPS")
         gflops = runtime.main_call(count_gflops, model, cfg.dataset.image_size,
-                             use_valid_mask=cfg.dataset.resize_mode == "letterbox",
-                             native_size=(1024, 1024) if cfg.model.forensic_mode == "jpeg" else None)
-        if cfg.model.forensic_mode == "jpeg":
-            ConsoleProgress.info("JPEG GFLOPs measured at native 1024x1024; larger frames cost more")
+                             native_size=(1024, 1024))
+        ConsoleProgress.info("JPEG GFLOPs measured at native 1024x1024; larger frames cost more")
         ConsoleProgress.info(f"Подсчёт завершён: {gflops:.2f} GFLOPS; создание оптимизатора")
         optimizer = build_optimizer(cfg.train, model)
         ConsoleProgress.info(f"Создание DataLoader: batch_size={cfg.train.batch_size}, workers={cfg.train.workers}")
         train_loader, val_loader = build_loaders(cfg.train, train_ds, val_ds, runtime=runtime)
-        self._isolate_loader_rng(train_loader, val_loader)
 
         ConsoleProgress.info(f"DataLoader готовы: train={len(train_loader)} батчей, val={len(val_loader)}; настройка scheduler, AMP scaler и EMA")
-        steps_per_epoch = math.ceil(len(train_loader) / cfg.train.accum_steps)
+        steps_per_epoch = math.ceil(len(train_loader) / cfg.train.grad_accum_steps)
         scheduler_kwargs = {}
-        if cfg.train.full_train_epochs:
+        if cfg.train.full_pass_epochs:
             full_batches = (DistributedBatchSampler.batch_count(
                 len(train_ds), cfg.train.batch_size, runtime.world_size, False)
                 if runtime.distributed else math.ceil(len(train_ds) / cfg.train.batch_size))
-            scheduler_kwargs['full_steps_per_epoch'] = math.ceil(full_batches / cfg.train.accum_steps)
+            scheduler_kwargs['full_steps_per_epoch'] = math.ceil(full_batches / cfg.train.grad_accum_steps)
         scheduler = build_scheduler(cfg.train, optimizer, steps_per_epoch, **scheduler_kwargs)
         scaler = self.amp.scaler()
         ema = build_ema(cfg.train, model)
@@ -134,17 +125,16 @@ class ExperimentRunner:
 
         def prepare_run():
             nonlocal run
-            run = Run.create(cfg.paths.runs_path, cfg.paths.run_name, resume=cfg.train.resume)
+            run = Run.create(cfg.paths.runs_path, cfg.run_name, resume=cfg.train.resume)
             train_df.to_parquet(run.dir / 'training_rows.parquet', index=False)
             val_df.to_parquet(run.dir / 'development_rows.parquet', index=False)
             run.save_summary({'evaluation_role': 'development', 'protocol_digest': protocol.digest,
                               'holdout_evaluated': False, 'training_complete': False})
             run.save_snapshot(self._snapshot(plain_config, gflops))
-            run.info(f"{cfg.paths.run_name}, {gflops} GFLOPS; GPUs={runtime.world_size}, "
-                     f"effective batch={cfg.train.batch_size * cfg.train.accum_steps * runtime.world_size}")
-            if cfg.model.sync_batchnorm:
-                run.info(f'SyncBN: encoder/decoder/fusion, global forward batch up to '
-                         f'{cfg.train.batch_size * runtime.world_size}; JPEG branch keeps per-frame normalization')
+            run.info(f"{cfg.run_name}, {gflops} GFLOPS; GPUs={runtime.world_size}, "
+                     f"effective batch={cfg.train.batch_size * cfg.train.grad_accum_steps * runtime.world_size}")
+            run.info(f'SyncBN: encoder/decoder/fusion, global forward batch up to '
+                     f'{cfg.train.batch_size * runtime.world_size}; JPEG branch keeps per-frame normalization')
             return str(run.dir)
 
         run_path = runtime.main_call(prepare_run)
@@ -174,10 +164,10 @@ class ExperimentRunner:
                 train_ds.augmentations.set_epoch(epoch)
                 if runtime.distributed:
                     train_loader.batch_sampler.set_epoch(epoch, seed=cfg.seed)
-                    steps_per_epoch = math.ceil(len(train_loader) / cfg.train.accum_steps)
-                elif cfg.train.full_train_epochs:
+                    steps_per_epoch = math.ceil(len(train_loader) / cfg.train.grad_accum_steps)
+                elif cfg.train.full_pass_epochs:
                     train_loader.sampler.set_epoch(epoch)
-                    steps_per_epoch = math.ceil(len(train_loader) / cfg.train.accum_steps)
+                    steps_per_epoch = math.ceil(len(train_loader) / cfg.train.grad_accum_steps)
                 if not runtime.distributed:
                     train_loader.sampler.generator = torch.Generator().manual_seed(cfg.seed + epoch)
                 started = time.time()
@@ -267,29 +257,17 @@ class ExperimentRunner:
     def _checkpoint(self, run, model, ema, optimizer, scheduler, scaler, epoch, state,
                     plain_config, *, validation_complete):
         runtime = self.runtime
-        rng_states = (runtime.gather_objects(TorchRNGState.capture())
-                      if self.config.model.forensic_contrastive_dim and runtime.distributed else None)
         runtime.synchronize_buffers(model)
         runtime.synchronize_buffers(ema.module)
         runtime.main_call(self._save_training_checkpoint,
             run, model, ema, optimizer, scheduler, scaler, epoch, state, plain_config,
-            validation_complete=validation_complete, rng_states=rng_states)
-
-    def _isolate_loader_rng(self, train_loader, val_loader):
-        if self.config.model.forensic_contrastive_dim:
-            # Recreating persistent iterators on resume must not consume the
-            # CPU stream used by model dropout and contrastive sampling.
-            for offset, loader in enumerate((train_loader, val_loader)):
-                loader.generator = torch.Generator().manual_seed(self.config.seed + offset)
+            validation_complete=validation_complete)
 
     @staticmethod
     def _save_training_checkpoint(run, model, ema, optimizer, scheduler, scaler,
-                                  epoch, state, plain_config, *, validation_complete, rng_states=None):
+                                  epoch, state, plain_config, *, validation_complete):
         """Atomic training commit; validation artifacts are a separate phase."""
         run.save_state({
-            **({'rank_rng_states': rng_states} if rng_states is not None else {}),
-            **({'torch_rng_state': TorchRNGState.capture()}
-               if plain_config.get('forensic_contrastive_dim', 0) else {}),
             'model': model.state_dict(),
             'ema': ema.module.state_dict(),
             'ema_n_averaged': int(ema.n_averaged),
@@ -308,19 +286,16 @@ class ExperimentRunner:
 
     def _build_training_model(self):
         cfg = self.config
-        checkpoint = cfg.paths.runs_path / cfg.paths.run_name / 'ckpt' / 'last.pt'
+        checkpoint = cfg.paths.runs_path / cfg.run_name / 'ckpt' / 'last.pt'
         resume_available = cfg.train.resume and checkpoint.is_file()
         finetune = cfg.train.finetune_from is not None and not resume_available
         initialization = (f'из checkpoint {checkpoint}' if resume_available else
                           f'дотюн из {cfg.train.finetune_from}' if finetune else 'из pretrained-весов')
-        ConsoleProgress.info(f'Создание модели {cfg.model.encoder_name}: инициализация {initialization}, '
+        ConsoleProgress.info(f'Создание модели {cfg.model.encoder}: инициализация {initialization}, '
                              f'перенос на {self.device}')
-        model = build_model(cfg.model, pretrained=not (resume_available or finetune))
+        model = build_model(cfg.model, aux_weight=cfg.loss.aux_weight, pretrained=not (resume_available or finetune))
         if finetune:
             self._load_finetune_weights(model)
-        if cfg.train.jpeg_pair_training:
-            from src.training.jpeg_consistency import freeze_except_jpeg
-            freeze_except_jpeg(model)
         return configure_memory_format(model.to(self.device))
 
     def _load_finetune_weights(self, model) -> None:
@@ -331,11 +306,16 @@ class ExperimentRunner:
             raise ValueError('Cannot finetune a run after holdout evaluation was claimed')
         saved = torch.load(checkpoint, map_location='cpu', weights_only=True)
         EvaluationProtocol.load(cfg.dataset.protocol_path).verify_run(saved['cfg'])
+        source = ExperimentConfig.from_dict(SnapshotAdapter.normalize(saved['cfg']))
+        if (source.model.encoder != cfg.model.encoder
+                or source.model.jpeg_channels != cfg.model.jpeg_channels
+                or (source.loss.aux_weight > 0) != (cfg.loss.aux_weight > 0)):
+            raise ValueError('Finetune requires matching encoder, JPEG channels and auxiliary head')
         model.load_state_dict(saved[cfg.train.finetune_weights])
 
     def _check_resume_protocol(self) -> None:
         cfg = self.config
-        run_dir = cfg.paths.runs_path / cfg.paths.run_name
+        run_dir = cfg.paths.runs_path / cfg.run_name
         if not cfg.train.resume or not (run_dir / "ckpt" / "last.pt").exists():
             return
         if (run_dir / 'holdout_claim.json').exists():
@@ -344,66 +324,23 @@ class ExperimentRunner:
         world_size = self.runtime.world_size if self.runtime is not None else 1
         if snapshot.get('world_size', 1) != world_size:
             raise ValueError('Cannot resume with a different world_size; use finetune_from in a new run')
-        if snapshot.get('pipeline_version') != PIPELINE_VERSION:
-            raise ValueError('Cannot resume a historical pipeline; choose a new run_name')
-        current = cfg.to_flat_dict()
-        saved_dataset = snapshot.get('dataset', snapshot)
-        saved_model = snapshot.get('model', snapshot)
-        if saved_model.get('sync_batchnorm', False) != cfg.model.sync_batchnorm:
-            raise ValueError('Cannot resume with a different model.sync_batchnorm; choose a new run_name')
-        saved_train = snapshot.get('train', snapshot)
-        if saved_train.get('jpeg_pair_training',False)!=cfg.train.jpeg_pair_training:
-            raise ValueError('Cannot change jpeg_pair_training on resume')
-        if cfg.train.jpeg_pair_training:
-            for key in ('jpeg_consistency_weight','jpeg_teacher_min_dice','jpeg_teacher_threshold',
-                        'jpeg_pair_quality_min','jpeg_pair_quality_max','finetune_from','finetune_weights',
-                        'epoch_size','epochs','batch_size','accum_steps','fmap_lr','warmup_frac','min_lr_factor'):
-                if saved_train.get(key)!=current[key]:
-                    raise ValueError(f'Cannot change train.{key} on paired resume')
-        saved_eval = snapshot.get('eval', snapshot)
-        if saved_train.get('sampling_strategy', 'negative_fraction') != cfg.train.sampling_strategy:
-            raise ValueError('Cannot resume with a different train.sampling_strategy; choose a new run_name')
-        if cfg.train.sampling_strategy == 'focus_coverage':
-            for key in ('focus_manifest', 'focus_fraction', 'negative_fraction', 'epoch_size',
-                        'epochs', 'batch_size', 'accum_steps'):
-                if saved_train.get(key) != current[key]:
-                    raise ValueError(f'Cannot resume with a different train.{key}; choose a new run_name')
-        if saved_eval.get('small_mask_weight', 1.0) != cfg.eval.small_mask_weight:
-            raise ValueError('Cannot resume with a different eval.small_mask_weight; choose a new run_name')
-        if cfg.train.full_train_epochs or saved_train.get('full_train_epochs', 0):
-            for key in ('full_train_epochs', 'epochs', 'epoch_size', 'batch_size', 'accum_steps',
-                        'warmup_frac', 'min_lr_factor', 'encoder_lr', 'fmap_lr', 'lr'):
-                if saved_train.get(key) != current[key]:
-                    raise ValueError(f'Cannot resume with a different train.{key}; choose a new run_name')
-        for key in ('image_size', 'resize_mode', 'protocol_path'):
-            if saved_dataset.get(key) != current[key]:
-                raise ValueError(f'Cannot resume with a different dataset.{key}; choose a new run_name')
-        for section in ('model', 'loss', 'augmentation'):
-            values = cfg.to_dict()[section]
-            saved_values = snapshot.get(section, snapshot)
-            for key, value in values.items():
-                # Snapshots predating optional native detail branches mean disabled.
-                default = 0 if section == 'model' and key in {'luma_image_size', 'wavelet_image_size', 'forensic_contrastive_dim'} else None
-                if section == 'loss':
-                    default = getattr(LossConfig(), key)
-                if section == 'model' and key in {'jpeg_variant', 'fusion_variant'}:
-                    default = 'baseline'
-                if section == 'model' and key == 'strided_resize':
-                    default = False
-                if section == 'model' and key == 'resize_variant':
-                    default = 'linear'
-                if section == 'model' and key in {'noise_encoder_name', 'guided_radius', 'guided_epsilon', 'guided_scale', 'dual_fusion_width'}:
-                    default = {'noise_encoder_name': None, 'guided_radius': 2,
-                               'guided_epsilon': .01, 'guided_scale': .25, 'dual_fusion_width': 16}[key]
-                previous = saved_values.get(key, default)
-                if section == 'model' and key == 'wavelet_fusion':
-                    previous = saved_values.get(key, 'late')
-                if section == 'model' and key == 'wavelet_aux_source':
-                    previous = saved_values.get(key, 'wavelet')
-                if isinstance(value, tuple) and isinstance(previous, list):
-                    previous = tuple(previous)
-                if previous != value:
+        previous = ExperimentConfig.from_dict(SnapshotAdapter.normalize(snapshot))
+        current = cfg.to_dict()
+        saved = previous.to_dict()
+        for section in ('model', 'dataset', 'loss', 'augmentation'):
+            for key, value in current[section].items():
+                if saved[section][key] != value:
                     raise ValueError(f'Cannot resume with a different {section}.{key}; choose a new run_name')
+        # Optimizer/scheduler state is meaningful only for the same training recipe.
+        runtime_fields = {'device', 'devices', 'distributed_backend', 'workers', 'resume',
+                          'finetune_from', 'finetune_weights'}
+        for key, value in current['train'].items():
+            if key not in runtime_fields and saved['train'][key] != value:
+                raise ValueError(f'Cannot resume with a different train.{key}; choose a new run_name')
+        if previous.eval != cfg.eval:
+            raise ValueError('Cannot resume with different evaluation settings; choose a new run_name')
+        if previous.seed != cfg.seed:
+            raise ValueError('Cannot resume with a different seed; choose a new run_name')
         EvaluationProtocol.load(cfg.dataset.protocol_path).verify_run(snapshot)
 
     def _split_data(self):
@@ -414,10 +351,9 @@ class ExperimentRunner:
         return protocol.rows('train'), development
 
     def _snapshot(self, plain_config: dict, gflops: float) -> dict:
-        result = {**plain_config, 'arm': self.arm, 'fmap_channels': FMAP_CHANNELS, 'gflops': round(gflops, 3)}
-        if self.config.model.forensic_mode == 'jpeg':
-            result['gflops_native_size'] = [1024, 1024]
-            result['gflops_variable_native_size'] = True
+        result = {**plain_config, 'arm': self.arm, 'gflops': round(gflops, 3)}
+        result['gflops_native_size'] = [1024, 1024]
+        result['gflops_variable_native_size'] = True
         return result
 
     def _resume_if_needed(
@@ -445,18 +381,12 @@ class ExperimentRunner:
         scheduler.load_state_dict(saved["scheduler"])
         if saved.get("scaler"):
             scaler.load_state_dict(saved["scaler"])
-        if cfg.model.forensic_contrastive_dim and 'torch_rng_state' in saved:
-            rng = saved['torch_rng_state']
-            if 'rank_rng_states' in saved:
-                rank = self.runtime.rank if self.runtime is not None else 0
-                rng = saved['rank_rng_states'][rank]
-            TorchRNGState.restore(rng)
 
         saved_epoch = int(saved["epoch"])
         state.seen_total = int(
             saved.get(
                 "samples",
-                (saved_epoch + 1) * cfg.train.epoch_size,
+                (saved_epoch + 1) * cfg.train.samples_per_epoch,
             )
         )
         validation_complete = saved.get('validation_complete', True)
@@ -544,8 +474,8 @@ class ExperimentRunner:
                 ),
                 "samples": state.seen_total,
                 "gflops": round(gflops, 1),
-                "within_limit": None if self.config.model.forensic_mode == 'jpeg' else gflops <= 100,
-                "gflops_native_size": [1024, 1024] if self.config.model.forensic_mode == 'jpeg' else None,
+                "within_limit": None,
+                "gflops_native_size": [1024, 1024],
                 "reference_within_limit": gflops <= 100,
                 "validation_resolution": "original",
                 "training_complete": True,
@@ -570,15 +500,9 @@ def train_one_epoch(
 ) -> EpochTrainResult:
     runtime = runtime or TrainingRuntime(device)
     model.train()
-    paired_objective=None
-    if config.train.jpeg_pair_training:
-        from src.training.jpeg_consistency import JPEGPairObjective,freeze_except_jpeg
-        freeze_except_jpeg(model)
-        paired_objective=JPEGPairObjective.from_config(config,device)
     skipped_steps = 0
     meter = LossMeter()
-    criterion = SegmentationLoss(**config.loss.to_dict(), aux_weight=config.model.aux_weight,
-                                 dct_aux_weight=config.model.dct_aux_weight)
+    criterion = SegmentationLoss(**config.loss.to_dict())
     seen = 0
     accumulation_samples = 0
     negatives = torch.zeros((), device=device)
@@ -597,7 +521,7 @@ def train_one_epoch(
         if profiler is not None:
             profiler.mark()
 
-        is_accum_boundary = (step + 1) % config.train.accum_steps == 0
+        is_accum_boundary = (step + 1) % config.train.grad_accum_steps == 0
         is_last_batch = total_batches is not None and (step + 1) == total_batches
         runtime.before_forward(model)
         sync = (model.no_sync() if runtime.distributed and not runtime.cpu_collectives
@@ -605,34 +529,23 @@ def train_one_epoch(
                 else nullcontext())
         with sync:
             with amp.autocast():
-                model_kwargs = {"valid_mask": batch["valid_mask"]} if "valid_mask" in batch else {}
-                if 'jpeg' in batch:
-                    model_kwargs['jpeg'] = batch['jpeg']
-                if 'local_input' in batch:
-                    model_kwargs['local_input'] = batch['local_input']
-                if 'native_rgb' in batch:
-                    model_kwargs['native_rgb'] = batch['native_rgb']
-                if paired_objective is not None:
-                    loss_result = paired_objective(model, batch)
-                else:
-                    loss_result = criterion(
-                        model(images, batch.get("fmap"), **model_kwargs), batch,
-                    )
+                model_kwargs = {'jpeg': batch['jpeg']} if 'jpeg' in batch else {}
+                loss_result = criterion(model(images, **model_kwargs), batch)
             if profiler is not None:
                 profiler.mark()
             loss = loss_result.total
-            if config.train.full_train_epochs or runtime.distributed:
+            if config.train.full_pass_epochs or runtime.distributed:
                 accumulation_samples += len(images)
                 scaler.scale(loss * len(images)).backward()
             else:
-                scaler.scale(loss / config.train.accum_steps).backward()
+                scaler.scale(loss / config.train.grad_accum_steps).backward()
         if profiler is not None:
             profiler.mark()
         if is_accum_boundary or is_last_batch:
             runtime.synchronize_gradients()
-            if config.train.grad_clip or config.train.full_train_epochs or runtime.distributed:
+            if config.train.grad_clip or config.train.full_pass_epochs or runtime.distributed:
                 scaler.unscale_(optimizer)
-            if config.train.full_train_epochs or runtime.distributed:
+            if config.train.full_pass_epochs or runtime.distributed:
                 divisor = runtime.sum(accumulation_samples) / runtime.world_size
                 for parameter in model.parameters():
                     if parameter.grad is not None:

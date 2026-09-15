@@ -1,6 +1,0 @@
-extends: jpeg640_pretrained.yaml
-paths:
-  run_name: jpeg640_pretrained_syncbn
-model:
-  # NCCL on multiple GPUs; keep batch_size * GPU count fixed for comparable BN.
-  sync_batchnorm: true

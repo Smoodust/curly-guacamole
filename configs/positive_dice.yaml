@@ -1,5 +1,0 @@
-extends: baseline.yaml
-paths:
-  run_name: positive_dice
-loss:
-  dice_scope: positive

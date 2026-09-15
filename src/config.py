@@ -5,7 +5,6 @@ import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any
 
 import yaml
 from dotenv import dotenv_values
@@ -14,7 +13,7 @@ import global_config
 from src.data.augmentation.base import AugmentationConfig
 from src.training.metric import DEFAULT_MASK_GRID
 
-PIPELINE_VERSION = 'emcad_v1'
+PIPELINE_VERSION = 'jpeg640_v1'
 DEFAULT_PROTOCOL_PATH = 'runs/validation_protocol_20260908/protocol'
 
 
@@ -36,7 +35,6 @@ class ConfigSection:
 class PathsConfig(ConfigSection):
     data_path: Path
     runs_path: Path
-    run_name: str
 
     @staticmethod
     def current_data_path() -> Path:
@@ -48,144 +46,41 @@ class PathsConfig(ConfigSection):
     @classmethod
     def from_dict(cls, data, *, base_dir=Path('.')):
         data = _mapping(data, 'paths')
-        _check_keys(data, {'run_name'}, 'paths', optional={'data_path', 'runs_path'})
+        _check_keys(data, set(), 'paths', optional={'data_path', 'runs_path'})
         settings = {**dotenv_values(global_config.PROJECT_ROOT / '.env'), **os.environ}
         return cls(
             cls.current_data_path(),
             _path(settings.get('AIIJC_RUNS_PATH') or global_config.RUNS_PATH, global_config.PROJECT_ROOT),
-            _non_empty_str(data['run_name'], 'paths.run_name'),
         )
 
     def to_dict(self):
-        return dict(data_path=str(self.data_path), runs_path=str(self.runs_path), run_name=self.run_name)
+        return dict(data_path=str(self.data_path), runs_path=str(self.runs_path))
 
 
 @dataclass(frozen=True)
 class ModelConfig(ConfigSection):
-    encoder_name: str = 'pvt_v2_b2'
-    forensic_channels: tuple[int, ...] = (64, 96, 128)
-    aux_weight: float = 0.4
-    norm: str = 'batch'
-    sync_batchnorm: bool = False
-    use_forensics: bool = True
-    forensic_mode: str = 'maps'
-    jpeg_pretrained: str | None = None
-    jpeg_variant: str = 'baseline'
-    fusion_variant: str = 'baseline'
-    dct_aux_weight: float = 0.0
-    forensic_contrastive_dim: int = 0
-    decoder_kwargs: dict[str, Any] = field(default_factory=dict)
-    local_image_size: int = 0
-    luma_image_size: int = 0
-    wavelet_image_size: int = 0
-    wavelet_fusion: str = 'late'
-    wavelet_aux_source: str = 'wavelet'
-    strided_resize: bool = False
-    resize_variant: str = 'linear'
-    noise_encoder_name: str | None = None
-    guided_radius: int = 2
-    guided_epsilon: float = .01
-    guided_scale: float = .25
-    dual_fusion_width: int = 16
+    encoder: str = 'pvt_v2_b2'
+    jpeg_channels: tuple[int, ...] = (64, 96, 128)
+    jpeg_pretrained: str | None = 'DCT_djpeg.pth'
 
     def __post_init__(self):
-        _non_empty_str(self.encoder_name, 'model.encoder_name')
-        if self.noise_encoder_name is not None:
-            _non_empty_str(self.noise_encoder_name, 'model.noise_encoder_name')
-            if not self.wavelet_image_size or self.strided_resize:
-                raise ValueError('dual encoder requires wavelet native input without strided resize')
-        for key in ('guided_radius', 'dual_fusion_width'):
-            if type(getattr(self, key)) is not int or getattr(self, key) < 1:
-                raise ValueError(f'model.{key} must be a positive integer')
-        for key in ('guided_epsilon', 'guided_scale'):
-            value = getattr(self, key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-                raise ValueError(f'model.{key} must be finite and positive')
-        if self.wavelet_fusion not in {'late', 'stride4', 'stride8', 'stride4_stride8_late'}:
-            raise ValueError('wavelet_fusion must be late, stride4, stride8 or stride4_stride8_late')
-        if self.wavelet_fusion != 'late' and not self.wavelet_image_size:
-            raise ValueError('early wavelet_fusion requires wavelet_image_size')
-        if self.wavelet_aux_source not in {'wavelet', 'decoder'}:
-            raise ValueError('wavelet_aux_source must be wavelet or decoder')
-        if self.wavelet_aux_source == 'decoder' and (not self.wavelet_image_size or self.wavelet_fusion != 'late'):
-            raise ValueError('wavelet_aux_source=decoder requires late wavelet fusion')
-        if type(self.forensic_contrastive_dim) is not int or self.forensic_contrastive_dim < 0:
-            raise ValueError('model.forensic_contrastive_dim must be an integer >= 0')
-        if self.forensic_contrastive_dim and not self.use_forensics:
-            raise ValueError('forensic_contrastive_dim requires use_forensics')
-        if type(self.wavelet_image_size) is not int or self.wavelet_image_size < 0 or self.wavelet_image_size % 32:
-            raise ValueError('model.wavelet_image_size must be 0 or a positive multiple of 32')
-        if self.wavelet_image_size and (self.local_image_size or self.luma_image_size or self.strided_resize
-                or any(self.decoder_kwargs.get(k, 0) for k in
-                       ('rgb_refinement_channels', 'output_refinement_channels'))):
-            raise ValueError('wavelet_image_size requires EMCAD without other detail/resize branches')
-        if type(self.strided_resize) is not bool:
-            raise ValueError('model.strided_resize must be boolean')
-        if self.resize_variant not in {'linear', 'nonlinear', 'residual_paper', 'residual_compact'}:
-            raise ValueError('unknown model.resize_variant')
-        if self.resize_variant != 'linear' and not self.strided_resize:
-            raise ValueError('resize_variant requires strided_resize')
-        if self.strided_resize and (self.use_forensics or self.local_image_size or self.luma_image_size):
-            raise ValueError('strided_resize requires RGB-only without local/luma branches')
-        object.__setattr__(self, 'forensic_channels', tuple(self.forensic_channels))
-        if len(self.forensic_channels) != 3 or any(type(c) is not int or c <= 0 for c in self.forensic_channels):
-            raise ValueError('model.forensic_channels must contain three positive integers')
-        if self.norm not in {'batch', 'group'}:
-            raise ValueError("model.norm must be 'batch' or 'group'")
-        if type(self.sync_batchnorm) is not bool:
-            raise ValueError('model.sync_batchnorm must be boolean')
-        if type(self.use_forensics) is not bool:
-            raise ValueError('model.use_forensics must be boolean')
-        for name in ('aux_weight', 'dct_aux_weight'):
-            _nonnegative(getattr(self, name), f'model.{name}')
-        if self.forensic_mode not in {'maps', 'jpeg'}:
-            raise ValueError('forensic_mode must be maps or jpeg')
-        if self.forensic_mode == 'jpeg' and not self.use_forensics:
-            raise ValueError('forensic_mode=jpeg requires use_forensics')
-        if self.jpeg_variant not in {'baseline', 'signed', 'attention', 'subblock4'}:
-            raise ValueError('unknown model.jpeg_variant')
-        if self.fusion_variant not in {'baseline', 'local', 'spatial', 'channel_spatial', 'film', 'cross_attention'}:
-            raise ValueError('unknown model.fusion_variant')
-        if self.fusion_variant != 'baseline' and self.forensic_mode != 'jpeg':
-            raise ValueError('fusion_variant requires forensic_mode=jpeg')
-        if self.jpeg_variant != 'baseline' and self.forensic_mode != 'jpeg':
-            raise ValueError('jpeg_variant requires forensic_mode=jpeg')
+        _non_empty_str(self.encoder, 'model.encoder')
+        object.__setattr__(self, 'jpeg_channels', tuple(self.jpeg_channels))
+        if len(self.jpeg_channels) != 3 or any(type(c) is not int or c <= 0 for c in self.jpeg_channels):
+            raise ValueError('model.jpeg_channels must contain three positive integers')
         if self.jpeg_pretrained is not None:
             _non_empty_str(self.jpeg_pretrained, 'model.jpeg_pretrained')
-            if self.forensic_mode != 'jpeg':
-                raise ValueError('jpeg_pretrained requires forensic_mode=jpeg')
-        if self.dct_aux_weight and not self.use_forensics:
-            raise ValueError('DCT auxiliary head requires use_forensics')
-        if type(self.local_image_size) is not int or self.local_image_size < 0 or self.local_image_size % 32:
-            raise ValueError('model.local_image_size must be 0 or a positive multiple of 32')
-        if type(self.luma_image_size) is not int or self.luma_image_size < 0 or self.luma_image_size % 32:
-            raise ValueError('model.luma_image_size must be 0 or a positive multiple of 32')
-        if self.luma_image_size and self.local_image_size:
-            raise ValueError('luma_image_size and local_image_size are mutually exclusive')
-        _mapping(self.decoder_kwargs, 'model.decoder_kwargs')
-        reserved = {'encoder_channels', 'encoder_strides', 'norm', 'use_aux'}
-        if reserved.intersection(self.decoder_kwargs):
-            raise ValueError('model.decoder_kwargs must not override encoder metadata, norm or use_aux')
-        if self.local_image_size and any(self.decoder_kwargs.get(k, 0) for k in
-                                        ('rgb_refinement_channels', 'output_refinement_channels')):
-            raise ValueError('local_image_size must not be combined with decoder refinement experiments')
-        if self.luma_image_size and any(self.decoder_kwargs.get(k, 0) for k in
-                                       ('rgb_refinement_channels', 'output_refinement_channels')):
-            raise ValueError('luma_image_size must not be combined with decoder refinement experiments')
 
 
 @dataclass(frozen=True)
 class DatasetConfig(ConfigSection):
     image_size: int = 640
-    resize_mode: str = 'stretch'
     # A storage location, never an enable/disable switch. The manifest is mandatory.
     protocol_path: str = DEFAULT_PROTOCOL_PATH
 
     def __post_init__(self):
         if type(self.image_size) is not int or self.image_size < 8 or self.image_size % 8:
             raise ValueError('dataset.image_size must be divisible by 8 and at least 8')
-        if self.resize_mode not in {'stretch', 'letterbox'}:
-            raise ValueError("dataset.resize_mode must be 'stretch' or 'letterbox'")
         _non_empty_str(self.protocol_path, 'dataset.protocol_path')
 
 
@@ -196,19 +91,16 @@ class TrainConfig(ConfigSection):
     distributed_backend: str = 'auto'
     workers: int = 10
     encoder_lr: float = 1e-4
-    fmap_lr: float = 3e-4
-    lr: float = 3e-4
+    jpeg_lr: float = 3e-4
+    head_lr: float = 3e-4
     weight_decay: float = 1e-4
     epochs: int = 6
-    epoch_size: int = 24000
-    full_train_epochs: int = 0
+    samples_per_epoch: int = 24000
+    full_pass_epochs: int = 0
     negative_fraction: float = .25
-    sampling_strategy: str = 'negative_fraction'
-    focus_manifest: str | None = None
-    focus_fraction: float = .5
     batch_size: int = 4
-    accum_steps: int = 4
-    warmup_frac: float = .05
+    grad_accum_steps: int = 4
+    warmup_fraction: float = .05
     min_lr_factor: float = .02
     amp: str = 'bf16'
     ema_decay: float = .999
@@ -217,29 +109,11 @@ class TrainConfig(ConfigSection):
     # Model weights only; relative paths are resolved against paths.runs_path.
     finetune_from: str | None = None
     finetune_weights: str = 'model'
-    jpeg_pair_training: bool = False
-    jpeg_consistency_weight: float = 0.0
-    jpeg_teacher_min_dice: float = .8
-    jpeg_teacher_threshold: float = .47265625
-    jpeg_pair_quality_min: int = 80
-    jpeg_pair_quality_max: int = 95
 
     def __post_init__(self):
         self.validate()
 
     def validate(self):
-        if type(self.jpeg_pair_training) is not bool:
-            raise ValueError('jpeg_pair_training must be boolean')
-        _nonnegative(self.jpeg_consistency_weight,'train.jpeg_consistency_weight')
-        if self.jpeg_consistency_weight and not self.jpeg_pair_training:
-            raise ValueError('jpeg_consistency_weight requires jpeg_pair_training')
-        for name in ('jpeg_teacher_min_dice','jpeg_teacher_threshold'):
-            _check_probability_grid((getattr(self,name),),f'train.{name}')
-        if (type(self.jpeg_pair_quality_min) is not int or type(self.jpeg_pair_quality_max) is not int
-                or not 1<=self.jpeg_pair_quality_min<=self.jpeg_pair_quality_max<=100):
-            raise ValueError('JPEG pair quality range must be integers in [1,100]')
-        if self.jpeg_pair_training and not self.finetune_from:
-            raise ValueError('jpeg_pair_training requires a fixed finetune_from teacher')
         if self.devices != 'auto':
             if (not isinstance(self.devices, (list, tuple)) or not self.devices
                     or any(type(index) is not int or index < 0 for index in self.devices)
@@ -252,31 +126,23 @@ class TrainConfig(ConfigSection):
             raise ValueError('train.distributed_backend must be auto, nccl or gloo')
         if not isinstance(self.device, str) or not (self.device in {'cpu', 'mps'} or self.device.startswith('cuda')):
             raise ValueError("train.device must be 'cpu', 'mps', 'cuda' or 'cuda:<index>'")
-        for name in ('epochs', 'epoch_size', 'batch_size', 'accum_steps'):
+        for name in ('epochs', 'samples_per_epoch', 'batch_size', 'grad_accum_steps'):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f'train.{name} must be a positive integer')
         if type(self.workers) is not int or self.workers < 0:
             raise ValueError('train.workers must be a nonnegative integer')
-        if type(self.full_train_epochs) is not int or not 0 <= self.full_train_epochs <= self.epochs:
-            raise ValueError('train.full_train_epochs must be an integer in [0, epochs]')
-        for name in ('encoder_lr', 'fmap_lr', 'lr'):
+        if type(self.full_pass_epochs) is not int or not 0 <= self.full_pass_epochs <= self.epochs:
+            raise ValueError('train.full_pass_epochs must be an integer in [0, epochs]')
+        for name in ('encoder_lr', 'jpeg_lr', 'head_lr'):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f'train.{name} must be finite and positive')
         for name in ('weight_decay', 'grad_clip'):
             _nonnegative(getattr(self, name), f'train.{name}')
-        for name in ('warmup_frac', 'min_lr_factor'):
+        for name in ('warmup_fraction', 'min_lr_factor'):
             _check_probability_grid((getattr(self, name),), f'train.{name}')
         if not 0 < self.negative_fraction < 1:
             raise ValueError('train.negative_fraction must be in (0, 1)')
-        if self.sampling_strategy not in {'negative_fraction', 'uniform_mask_area', 'focus_coverage'}:
-            raise ValueError('unknown train.sampling_strategy')
-        if self.sampling_strategy == 'focus_coverage':
-            _non_empty_str(self.focus_manifest, 'train.focus_manifest')
-            if not 0 < self.focus_fraction < 1 - self.negative_fraction:
-                raise ValueError('focus_fraction must leave room for negatives and other positives')
-            if self.full_train_epochs:
-                raise ValueError('focus_coverage cannot be overridden by full_train_epochs')
         if self.finetune_weights not in {'model', 'ema'}:
             raise ValueError('finetune_weights must be model or ema')
         if not 0 <= self.ema_decay < 1:
@@ -292,14 +158,14 @@ class TrainConfig(ConfigSection):
 @dataclass(frozen=True)
 class EvalConfig(ConfigSection):
     n_bins: int = 256
-    small_mask_weight: float = 1.0
+    selection_small_mask_weight: float = 1.6
     mask_thresholds: tuple[float, ...] = DEFAULT_MASK_GRID
     cls_thresholds: tuple[float, ...] = (0., .2, .4, .5, .6, .7, .8, .9, .95)
     min_areas: tuple[float, ...] = (0.,)
 
     def __post_init__(self):
-        if isinstance(self.small_mask_weight, bool) or not math.isfinite(self.small_mask_weight) or self.small_mask_weight <= 0:
-            raise ValueError('eval.small_mask_weight must be finite and positive')
+        if isinstance(self.selection_small_mask_weight, bool) or not math.isfinite(self.selection_small_mask_weight) or self.selection_small_mask_weight <= 0:
+            raise ValueError('eval.selection_small_mask_weight must be finite and positive')
         if type(self.n_bins) is not int or self.n_bins <= 0:
             raise ValueError('eval.n_bins must be a positive integer')
         for name in ('mask_thresholds', 'cls_thresholds', 'min_areas'):
@@ -310,43 +176,18 @@ class EvalConfig(ConfigSection):
 
 @dataclass(frozen=True)
 class LossConfig(ConfigSection):
-    dice_scope: str = 'all'
     dice_weight: float = 1.0
-    pixel_loss: str = 'bce'
-    focal_gamma: float = 1.0
-    dice_area_reference: float = 0.0
-    dice_area_max_weight: float = 3.0
-    boundary_weight: float = 0.0
-    aux_loss_weight: float | None = None
-    forensic_intra_weight: float = 0.0
-    forensic_intra_temperature: float = 0.1
-    forensic_intra_max_samples: int = 256
-    forensic_intra_positive_fraction: float = 0.9
+    aux_weight: float = .4
 
     def __post_init__(self):
-        if self.dice_scope not in {'all', 'positive'}:
-            raise ValueError("loss.dice_scope must be 'all' or 'positive'")
-        _nonnegative(self.dice_weight, 'loss.dice_weight')
-        _nonnegative(self.forensic_intra_weight, 'loss.forensic_intra_weight')
-        if not math.isfinite(self.forensic_intra_temperature) or self.forensic_intra_temperature <= 0:
-            raise ValueError('loss.forensic_intra_temperature must be finite and positive')
-        if type(self.forensic_intra_max_samples) is not int or self.forensic_intra_max_samples < 2:
-            raise ValueError('loss.forensic_intra_max_samples must be an integer >= 2')
-        if not math.isfinite(self.forensic_intra_positive_fraction) or not 0 < self.forensic_intra_positive_fraction <= 1:
-            raise ValueError('loss.forensic_intra_positive_fraction must be in (0, 1]')
-        if self.pixel_loss not in {'bce', 'focal'}:
-            raise ValueError("loss.pixel_loss must be 'bce' or 'focal'")
-        for name in ('focal_gamma', 'boundary_weight', 'dice_area_reference', 'dice_area_max_weight'):
+        for name in ('dice_weight', 'aux_weight'):
             _nonnegative(getattr(self, name), f'loss.{name}')
-        if self.dice_area_reference > 1 or self.dice_area_max_weight < 1:
-            raise ValueError('loss area reference must be <= 1 and maximum weight >= 1')
-        if self.aux_loss_weight is not None:
-            _nonnegative(self.aux_loss_weight, 'loss.aux_loss_weight')
 
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    paths: PathsConfig
+    run_name: str
+    paths: PathsConfig = field(default_factory=lambda: PathsConfig.from_dict({}))
     seed: int = 42
     model: ModelConfig = field(default_factory=ModelConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
@@ -358,12 +199,13 @@ class ExperimentConfig:
     @classmethod
     def from_dict(cls, data, *, base_dir='.'):
         data = _mapping(data, 'experiment')
-        _check_keys(data, {'paths'}, 'experiment', optional={
-            'seed', 'model', 'augmentation', 'dataset', 'train', 'eval', 'loss', 'pipeline_version'})
+        _check_keys(data, {'run_name'}, 'experiment', optional={
+            'paths', 'seed', 'model', 'augmentation', 'dataset', 'train', 'eval', 'loss', 'pipeline_version'})
         if data.get('pipeline_version', PIPELINE_VERSION) != PIPELINE_VERSION:
-            raise ValueError('Unsupported pipeline_version')
+            raise ValueError('Unsupported pipeline_version; migrate historical snapshots explicitly')
         return cls(
-            paths=PathsConfig.from_dict(data['paths'], base_dir=Path(base_dir)),
+            run_name=_non_empty_str(data['run_name'], 'run_name'),
+            paths=PathsConfig.from_dict(data.get('paths', {}), base_dir=Path(base_dir)),
             seed=data.get('seed', 42),
             model=ModelConfig.from_dict(data.get('model', {})),
             augmentation=_augmentation_from_dict(data.get('augmentation', {})),
@@ -374,38 +216,91 @@ class ExperimentConfig:
         )
 
     def __post_init__(self):
+        _non_empty_str(self.run_name, 'run_name')
         if type(self.seed) is not int or self.seed < 0:
             raise ValueError('seed must be a nonnegative integer')
-        if bool(self.model.forensic_contrastive_dim) != bool(self.loss.forensic_intra_weight):
-            raise ValueError('forensic_contrastive_dim and forensic_intra_weight must be enabled together')
         if self.augmentation.final_full_frame_epochs > self.train.epochs:
             raise ValueError('augmentation.final_full_frame_epochs must not exceed train.epochs')
-        if self.train.full_train_epochs > self.augmentation.final_full_frame_epochs:
-            raise ValueError('train.full_train_epochs requires matching final_full_frame_epochs')
-        if self.model.local_image_size and self.dataset.resize_mode != 'stretch':
-            raise ValueError('local_image_size currently requires stretch geometry')
-        if self.model.forensic_mode == 'jpeg' and self.dataset.resize_mode != 'stretch':
-            raise ValueError('forensic_mode=jpeg requires stretch geometry')
-        if self.model.luma_image_size and self.dataset.resize_mode != 'stretch':
-            raise ValueError('luma_image_size currently requires stretch geometry')
-        if self.model.wavelet_image_size and self.dataset.resize_mode != 'stretch':
-            raise ValueError('wavelet_image_size currently requires stretch geometry')
-        if self.model.strided_resize and self.dataset.resize_mode != 'stretch':
-            raise ValueError('strided_resize requires stretch geometry')
+        if self.train.full_pass_epochs > self.augmentation.final_full_frame_epochs:
+            raise ValueError('train.full_pass_epochs requires matching final_full_frame_epochs')
 
     def to_dict(self):
-        result = {'pipeline_version': PIPELINE_VERSION, 'paths': self.paths.to_dict(), 'seed': self.seed}
+        result = {'pipeline_version': PIPELINE_VERSION, 'run_name': self.run_name,
+                  'paths': self.paths.to_dict(), 'seed': self.seed}
         for name in ('model', 'dataset', 'train', 'eval', 'loss'):
             result[name] = getattr(self, name).to_dict()
         result['augmentation'] = asdict(self.augmentation)
         return result
 
     def to_flat_dict(self):
-        plain = {'pipeline_version': PIPELINE_VERSION, **self.paths.to_dict(), 'seed': self.seed}
+        plain = {'pipeline_version': PIPELINE_VERSION, 'run_name': self.run_name,
+                 **self.paths.to_dict(), 'seed': self.seed}
         for name in ('model', 'dataset', 'train', 'eval', 'loss'):
             plain.update(getattr(self, name).to_dict())
         plain.update(asdict(self.augmentation))
         return plain
+
+
+class SnapshotAdapter:
+    """Read selected historical JPEG/local checkpoints, never resurrect experiments."""
+
+    RENAMES = {
+        'model': {'encoder_name': 'encoder', 'forensic_channels': 'jpeg_channels'},
+        'train': {'fmap_lr': 'jpeg_lr', 'lr': 'head_lr', 'epoch_size': 'samples_per_epoch',
+                  'full_train_epochs': 'full_pass_epochs', 'accum_steps': 'grad_accum_steps',
+                  'warmup_frac': 'warmup_fraction'},
+        'eval': {'small_mask_weight': 'selection_small_mask_weight'},
+    }
+
+    @classmethod
+    def normalize(cls, snapshot):
+        version = snapshot.get('pipeline_version')
+        if version not in {PIPELINE_VERSION, 'emcad_v1'}:
+            raise ValueError('Unsupported historical pipeline; use codex/emcad-baseline')
+        if version == 'emcad_v1':
+            model = snapshot.get('model', snapshot)
+            required = {'forensic_mode': 'jpeg', 'fusion_variant': 'local',
+                        'jpeg_variant': 'baseline', 'norm': 'batch', 'sync_batchnorm': True,
+                        'use_forensics': True, 'dct_aux_weight': 0., 'forensic_contrastive_dim': 0,
+                        'local_image_size': 0, 'luma_image_size': 0, 'wavelet_image_size': 0,
+                        'strided_resize': False, 'noise_encoder_name': None, 'decoder_kwargs': {}}
+            # Missing historical mode/fusion/SyncBN keys have their original defaults.
+            old_defaults = {**required, 'forensic_mode': 'maps', 'fusion_variant': 'baseline', 'sync_batchnorm': False}
+            if any(model.get(k, old_defaults[k]) != v for k, v in required.items()):
+                raise ValueError('Unsupported historical architecture; use codex/emcad-baseline')
+            if snapshot.get('dataset', snapshot).get('resize_mode', 'stretch') != 'stretch':
+                raise ValueError('Unsupported historical resize mode')
+            train = snapshot.get('train', snapshot)
+            if train.get('jpeg_pair_training', False) or train.get('sampling_strategy', 'negative_fraction') != 'negative_fraction':
+                raise ValueError('Unsupported historical training recipe')
+            loss = snapshot.get('loss', snapshot)
+            fixed = {'dice_scope': 'all', 'pixel_loss': 'bce', 'dice_area_reference': 0.,
+                     'boundary_weight': 0., 'forensic_intra_weight': 0.}
+            if any(loss.get(k, v) != v for k, v in fixed.items()):
+                raise ValueError('Unsupported historical loss recipe')
+            auxiliary = model.get('aux_weight', .4)
+            override = loss.get('aux_loss_weight')
+            if override is not None and (auxiliary > 0) != (override > 0):
+                raise ValueError('Unsupported historical auxiliary head/loss combination')
+        result = {'pipeline_version': PIPELINE_VERSION,
+                  'run_name': snapshot.get('run_name', snapshot.get('paths', {}).get('run_name', 'inference')),
+                  'seed': snapshot.get('seed', 42)}
+        for section, schema in [('paths', PathsConfig), ('model', ModelConfig), ('dataset', DatasetConfig),
+                                ('train', TrainConfig), ('eval', EvalConfig), ('loss', LossConfig),
+                                ('augmentation', AugmentationConfig)]:
+            values = dict(snapshot.get(section, snapshot))
+            if version == PIPELINE_VERSION and section in snapshot:
+                _check_keys(values, set(), section, optional={item.name for item in fields(schema)})
+            if version == 'emcad_v1':
+                for before, after in cls.RENAMES.get(section, {}).items():
+                    if before in values:
+                        values[after] = values.pop(before)
+                if section == 'loss':
+                    values['aux_weight'] = snapshot.get('model', snapshot).get('aux_weight', .4)
+                    if values.get('aux_loss_weight') is not None:
+                        values['aux_weight'] = values['aux_loss_weight']
+            result[section] = {item.name: values[item.name] for item in fields(schema) if item.name in values}
+        return result
 
 
 class _ConfigLoader:
@@ -434,7 +329,7 @@ class _ConfigLoader:
 class RuntimeEnvironment:
     """Machine overrides for recipes; snapshot deserialization stays unchanged."""
 
-    FIELDS = {'batch_size': int, 'accum_steps': int, 'amp': str,
+    FIELDS = {'batch_size': int, 'grad_accum_steps': int, 'amp': str,
               'device': str, 'workers': int, 'devices': yaml.safe_load,
               'distributed_backend': str}
 
@@ -442,7 +337,7 @@ class RuntimeEnvironment:
         settings = {**dotenv_values(global_config.PROJECT_ROOT / '.env'), **os.environ}
         train = dict(_mapping(data.get('train', {}), 'train'))
         for name, cast in self.FIELDS.items():
-            key = 'AIIJC_' + name.upper()
+            key = 'AIIJC_' + ('ACCUM_STEPS' if name == 'grad_accum_steps' else name.upper())
             value = settings.get(key)
             if value is None or not value.strip():
                 continue

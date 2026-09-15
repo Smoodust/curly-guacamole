@@ -88,17 +88,22 @@ class BenchmarkBatches:
                 yield batch
 
 
-def benchmark(config, *, batches=32, warmup=8, transport='optimized', profile_data=False):
+def benchmark(config, *, batches=32, warmup=8, asynchronous_transfer=True, profile_data=False):
     from src.data.profiling import WorkerProfileSummary
     from src.training.base import set_random_seed
-    from src.training.builders import (build_datasets, build_loaders, build_model,
-                                       build_optimizer, build_scheduler, build_ema, configure_memory_format)
-    from src.training.engine import ExperimentRunner, train_one_epoch, _move_batch_to_device
+    from src.training.builders import (
+        build_datasets,
+        build_ema,
+        build_loaders,
+        build_model,
+        build_optimizer,
+        build_scheduler,
+        configure_memory_format,
+    )
+    from src.training.engine import ExperimentRunner, _move_batch_to_device, train_one_epoch
 
     if batches <= 0 or warmup < 0:
         raise ValueError('batches must be positive and warmup nonnegative')
-    if transport not in {'legacy', 'compact', 'optimized'}:
-        raise ValueError('Unknown transport mode')
     runner = ExperimentRunner(config)
     if runner.device.type != 'cuda' or not torch.cuda.is_available():
         raise ValueError('This benchmark requires CUDA')
@@ -107,9 +112,6 @@ def benchmark(config, *, batches=32, warmup=8, transport='optimized', profile_da
     datasets = build_datasets(config, runner.data_workspace, train_rows, val_rows)
     datasets[0].profile_data = profile_data
     worker_profile = WorkerProfileSummary() if profile_data else None
-    if transport == 'legacy':
-        for dataset in datasets:
-            dataset.local_dtype = torch.float32
     loader, val_loader = build_loaders(config.train, *datasets)
     total = warmup + batches
     if total > len(loader):
@@ -131,25 +133,24 @@ def benchmark(config, *, batches=32, warmup=8, transport='optimized', profile_da
             source = BenchmarkBatches(loader, total, worker_profile=worker_profile, warmup=warmup)
         set_random_seed(config.seed)
         # Fresh disposable model/optimizer per phase, no pretrained downloads or checkpoints.
-        model = configure_memory_format(build_model(config.model, pretrained=False).to(runner.device))
+        model = configure_memory_format(build_model(config.model, aux_weight=config.loss.aux_weight, pretrained=False).to(runner.device))
         optimizer = build_optimizer(config.train, model)
         ema = build_ema(config.train, model)
         profiler = StageProfiler(runner.device, warmup)
-        ConsoleProgress.info(f'Profile {transport}/{mode}: warmup={warmup}, measured={batches}')
+        ConsoleProgress.info(f'Profile {mode}: warmup={warmup}, measured={batches}')
         train_one_epoch(model=model, loader=source, optimizer=optimizer,
                         scheduler=build_scheduler(config.train, optimizer, total,
                                                   full_steps_per_epoch=total),
                         scaler=runner.amp.scaler(), ema=ema, amp=runner.amp,
                         config=config, device=runner.device, profiler=profiler,
-                        asynchronous_transfer=transport == 'optimized' and mode == 'loader')
+                        asynchronous_transfer=asynchronous_transfer and mode == 'loader')
         results[mode] = profiler.report()
         if mode == 'loader' and worker_profile is not None:
             results[mode]['worker_profile'] = worker_profile.report()
         ConsoleProgress.info(json.dumps(results[mode], ensure_ascii=False))
         del source, model, optimizer, ema
     return {'gpu': torch.cuda.get_device_name(runner.device), 'config': config.to_dict(),
-            'warmup': warmup, 'transport': transport, 'results': results,
-            'local_dtype': str(frozen['local_input'].dtype) if 'local_input' in frozen else None,
+            'warmup': warmup, 'asynchronous_transfer': asynchronous_transfer, 'results': results,
             'note': 'CUDA stream intervals include host launch gaps. With optimized transport, transfer measures exposed compute-stream wait, not total copy duration. Replay uses one fixed batch; no run is saved.'}
 
 
@@ -181,14 +182,14 @@ def benchmark_workers(config, workers, *, repeats=2, batches=32, warmup=8):
 def main():
     from src.config import load_experiment_config
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', default='configs/local.yaml')
+    parser.add_argument('--config', default='configs/baseline.yaml')
     parser.add_argument('--batches', type=int, default=32)
     parser.add_argument('--warmup', type=int, default=8)
     parser.add_argument('--workers', type=int, nargs='+', help='Compare worker counts, overriding .env for this benchmark only')
     parser.add_argument('--repeats', type=int, default=2, help='Passes for the worker comparison')
-    parser.add_argument('--compare-transfer', action='store_true', help='Compare FP32, compact AMP, and compact AMP with copy stream')
+    parser.add_argument('--compare-transfer', action='store_true', help='Compare synchronous and asynchronous CUDA transfers')
     parser.add_argument('--profile-data', action='store_true', help='Measure worker preprocessing stages on consumed batches')
-    parser.add_argument('--output', default='profiles/local.json')
+    parser.add_argument('--output', default='profiles/baseline.json')
     args = parser.parse_args()
     config = load_experiment_config(args.config)
     if args.profile_data and (args.compare_transfer or args.workers is not None):
@@ -196,8 +197,8 @@ def main():
     if args.compare_transfer and args.workers is not None:
         parser.error('Use --compare-transfer or --workers separately')
     if args.compare_transfer:
-        report = {mode: benchmark(config, batches=args.batches, warmup=args.warmup, transport=mode)
-                  for mode in ('legacy', 'compact', 'optimized')}
+        report = {mode: benchmark(config, batches=args.batches, warmup=args.warmup, asynchronous_transfer=mode == 'asynchronous')
+                  for mode in ('synchronous', 'asynchronous')}
         ConsoleProgress.info('Transport comparison: ' + json.dumps({
             mode: result['results']['loader']['wall_ms_per_batch'] for mode, result in report.items()}))
     elif args.workers is not None:

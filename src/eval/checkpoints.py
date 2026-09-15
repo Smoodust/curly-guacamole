@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from src.data.collation import ValidationCollator
 from src.data.data_workspace import DataWorkspace
 from src.data.dataset import AIIJCDataset
-from src.data.letterbox import Letterbox
+from src.data.geometry import restore_probability
 from src.eval.diagnostics import EvaluationReport
 from src.eval.protocol import EvaluationProtocol, GroupConnections, file_digest, rows_digest
 from src.inference.predict import ThresholdConfig
@@ -20,8 +20,8 @@ from src.progress import ConsoleProgress
 from src.training.builders import AmpContext, DataLoaderThreadLimits, build_model
 from src.training.metric import AICAccumulator
 from src.training.runs import Run
-from src.training.validation import DeviceHistogramAccumulator
 from src.training.transfer import BatchTransfer
+from src.training.validation import DeviceHistogramAccumulator
 
 
 def historical_originals(metadata, validation, originals, pairs):
@@ -72,46 +72,31 @@ class CheckpointEvaluator:
         rows.to_parquet(directory / 'rows.parquet', index=False)
         DataLoaderThreadLimits.apply()
         checkpoint = torch.load(self.checkpoint_path, map_location='cpu', weights_only=True)
-        model = build_model(self.config.model, pretrained=False)
+        model = build_model(self.config.model, aux_weight=self.config.aux_weight, pretrained=False)
         model.load_state_dict(checkpoint['ema'] if checkpoint.get('ema') is not None else checkpoint['model'])
         del checkpoint
         model = model.to(self.device, memory_format=torch.channels_last).eval()
         amp = AmpContext(self.device, torch.bfloat16 if self.config.amp == 'bf16' else torch.float16,
                          self.device.type == 'cuda' and self.config.amp != 'off', False)
         dataset = AIIJCDataset(DataWorkspace(self.config.data_path), rows, False,
-                              self.config.image_size, self.config.seed, mode='val', original_targets=True,
-                              resize_mode=self.config.resize_mode,
-                              local_image_size=self.config.model.local_image_size,
-                              luma_image_size=self.config.model.luma_image_size,
-                              wavelet_image_size=self.config.model.wavelet_image_size,
-                              strided_resize=self.config.model.strided_resize,
-                              use_forensics=self.config.model.use_forensics,
-                              forensic_mode=self.config.model.forensic_mode, jpeg_variant=self.config.model.jpeg_variant)
+                              self.config.image_size, self.config.seed, mode='val', original_targets=True)
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.workers,
                             collate_fn=ValidationCollator(), worker_init_fn=DataLoaderThreadLimits.apply,
                             pin_memory=self.device.type == 'cuda')
         snapshot = self.run.snapshot
         evaluation = snapshot.get('eval', snapshot)
         acc = AICAccumulator(n_bins=int(evaluation.get('n_bins', 256)),
-                             small_mask_weight=evaluation.get('small_mask_weight', 1.0))
+                             small_mask_weight=evaluation.get('selection_small_mask_weight', evaluation.get('small_mask_weight', 1.0)))
         histograms = DeviceHistogramAccumulator(acc, self.device)
         try:
             with torch.inference_mode():
                 for batch in ConsoleProgress.iterate(loader, f'{self.run.dir.name}: {purpose}'):
                     with amp.autocast():
-                        kwargs = {'valid_mask': batch['valid_mask'].to(self.device)} if 'valid_mask' in batch else {}
-                        if 'local_input' in batch:
-                            kwargs['local_input'] = batch['local_input'].to(self.device, non_blocking=True)
-                        if 'jpeg' in batch:
-                            kwargs['jpeg'] = BatchTransfer.move_jpeg(batch['jpeg'], self.device)
-                        if 'native_rgb' in batch:
-                            kwargs['native_rgb'] = [rgb.to(self.device, non_blocking=True) for rgb in batch['native_rgb']]
                         out = model(batch['image'].to(self.device, memory_format=torch.channels_last),
-                                    batch['fmap'].to(self.device) if 'fmap' in batch else None, **kwargs)
+                                    jpeg=BatchTransfer.move_jpeg(batch['jpeg'], self.device))
                     probs, cls = out['logits'].float().sigmoid(), out['cls_logits'].float().sigmoid().flatten()
                     for i, mask in enumerate(batch['original_mask']):
-                        content = batch['content_size'][i] if 'content_size' in batch else None
-                        restored = Letterbox.restore(probs[i:i+1], mask.shape[-2:], content)
+                        restored = restore_probability(probs[i:i+1], mask.shape[-2:])
                         histograms.update(restored, mask.to(self.device, non_blocking=True).reshape(1, 1, *mask.shape[-2:]), cls[i:i+1])
                 histograms.flush()
             if file_digest(self.checkpoint_path) != self.checkpoint_digest:

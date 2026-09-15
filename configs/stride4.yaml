@@ -1,6 +1,0 @@
-extends: baseline.yaml
-paths:
-  run_name: stride4
-model:
-  decoder_kwargs:
-    output_refinement_channels: 144

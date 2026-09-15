@@ -1,5 +1,0 @@
-extends: baseline.yaml
-paths:
-  run_name: dct_aux
-model:
-  dct_aux_weight: 0.2

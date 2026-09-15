@@ -71,7 +71,7 @@ def test_holdout_pipeline_loads_frozen_checkpoint_and_writes_separate_metrics(tm
             super().__init__()
             self.bias = torch.nn.Parameter(torch.tensor(-10.))
 
-        def forward(self, image, fmap=None):
+        def forward(self, image, **kwargs):
             return {'logits': image[:, :1] * 0 + self.bias,
                     'cls_logits': self.bias.expand(len(image), 1)}
 
@@ -87,7 +87,6 @@ def test_holdout_pipeline_loads_frozen_checkpoint_and_writes_separate_metrics(tm
     protocol = EvaluationProtocol.create(tmp_path / 'p', pd.DataFrame(records), pd.DataFrame(), pd.DataFrame())
     config = load_experiment_config('configs/baseline.yaml')
     config = replace(config, paths=replace(config.paths, data_path=root.parent),
-                     model=replace(config.model, use_forensics=False),
                      dataset=replace(config.dataset, image_size=16, protocol_path=str(protocol.path)),
                      train=replace(config.train, device='cpu', amp='off', workers=0))
     snapshot = dict(config.to_flat_dict(), **protocol.provenance())

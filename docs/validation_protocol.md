@@ -1,6 +1,6 @@
 # Фиксированная валидация
 
-В pipeline `emcad_v1` training всегда использует `runs/validation_protocol_20260908/protocol`: 62 219 примеров соревнования + 25 509 проверенных originals. Development содержит 20 740 + 8 502, holdout — 20 740 + 8 476. Originals имеют нулевые маски и включаются без флага. Путь manifest разрешается от корня проекта; расположение можно изменить через dataset.protocol_path, отключить протокол нельзя.
+В pipeline `jpeg640_v1` training всегда использует `runs/validation_protocol_20260908/protocol`: 62 219 примеров соревнования + 25 509 проверенных originals. Development содержит 20 740 + 8 502, holdout — 20 740 + 8 476. Originals имеют нулевые маски и включаются без флага. Путь manifest разрешается от корня проекта; расположение можно изменить через dataset.protocol_path, отключить протокол нельзя.
 
 Manifest не генерируется заново при запуске модели. Его checksums, связи групп и реальные train/development строки сохраняются и проверяются. Новые данные требуют нового manifest и нового запуска.
 
@@ -9,7 +9,7 @@ Manifest не генерируется заново при запуске мод
 Выберите любой текущий конфиг, например:
 
 ```powershell
-& 'D:/Apps/anaconda3/envs/challenges/python.exe' -m src.training --config configs/positive_dice.yaml
+& 'D:/Apps/anaconda3/envs/challenges/python.exe' -m src.training --config configs/baseline.yaml
 ```
 
 Development выбирает checkpoint и пороги по combined AIC. Вероятности восстанавливаются до исходного размера до порога; GT оценивается в исходном разрешении. Provided и originals записываются отдельно в `development/metrics.json`, `per_image.parquet`, `slices.csv`. Для групп без positive Dice/AIC равны null; FPR остаётся определённым.
@@ -18,11 +18,11 @@ Combined AIC с originals нельзя напрямую сравнивать с 
 
 ## Валидация с весом небольших масок
 
-Чтобы выбирать checkpoint и пороги по взвешенному AIC, добавьте в YAML:
+Оба бейзлайна выбирают checkpoint и пороги по взвешенному AIC:
 
 ```yaml
 eval:
-  small_mask_weight: 1.6
+  selection_small_mask_weight: 1.6
 ```
 
 Вес применяется к Dice каждого позитивного изображения, если исходная GT-маска занимает **больше 1% и не больше 5%** кадра. Взвешенный Dice нормируется на сумму весов; остальные позитивы имеют вес 1, FPR негативов считается как прежде. Площадь предсказания не определяет вес. Training loss и sampling этот параметр не меняет. Значение по умолчанию `1.0` возвращает обычную метрику.
@@ -43,4 +43,4 @@ eval:
 
 Перед оценкой создаётся `holdout_claim.json`; повторная оценка и дальнейшее resume этого запуска запрещены. При аварии marker остаётся: сначала выясните причину. Это защита одного run; сравнение многочисленных кандидатов по holdout по-прежнему нарушает независимость выбора модели.
 
-Исторический аудит создания протокола остаётся в `runs/validation_protocol_20260908`, старые модели — в `runs/archive`. Старые snapshots воспроизводятся прежним кодом на main, без подмены preprocessing.
+Исторический аудит создания протокола остаётся в `runs/validation_protocol_20260908`, старые модели — в `runs/archive`. Старые snapshots воспроизводятся прежним кодом в codex/emcad-baseline, без подмены preprocessing.

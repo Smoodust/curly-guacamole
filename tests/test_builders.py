@@ -45,7 +45,7 @@ def test_build_model_uses_model_config(monkeypatch, pretrained):
     config = load_experiment_config("configs/baseline.yaml")
     model = build_model(config.model, pretrained=pretrained)
 
-    assert model.aux_weight == config.model.aux_weight
+    assert model.aux_weight == config.loss.aux_weight
     assert model.decoder.out_channels == FakeFeatureInfo.channels()[0]
 
 
@@ -57,7 +57,7 @@ def test_build_loaders_uses_train_config():
         config.train,
         device="cpu",
         workers=0,
-        epoch_size=6,
+        samples_per_epoch=6,
         batch_size=2,
     )
     workspace = DataWorkspace(Path("D:/data"))
@@ -81,7 +81,7 @@ def test_build_loaders_uses_train_config():
 
     assert train_loader.batch_size == 2
     assert train_loader.sampler.num_samples == 6
-    assert val_loader.batch_size == 4
+    assert val_loader.batch_size == 2
 
 
 def test_build_optimizer_groups_named_parameters():
@@ -108,10 +108,10 @@ def test_build_optimizer_groups_named_parameters():
 
     assert (config.train.encoder_lr, config.train.weight_decay) in settings
     assert (config.train.encoder_lr, 0.0) in settings
-    assert (config.train.fmap_lr, config.train.weight_decay) in settings
-    assert (config.train.fmap_lr, 0.0) in settings
-    assert (config.train.lr, config.train.weight_decay) in settings
-    assert (config.train.lr, 0.0) in settings
+    assert (config.train.jpeg_lr, config.train.weight_decay) in settings
+    assert (config.train.jpeg_lr, 0.0) in settings
+    assert (config.train.head_lr, config.train.weight_decay) in settings
+    assert (config.train.head_lr, 0.0) in settings
 
 
 def test_build_scheduler_and_amp_context():
@@ -121,7 +121,7 @@ def test_build_scheduler_and_amp_context():
 
     config = load_experiment_config("configs/baseline.yaml")
     train_config = replace(config.train, device="cpu", amp="bf16")
-    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=train_config.lr)
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=train_config.head_lr)
 
     scheduler = build_scheduler(train_config, optimizer, steps_per_epoch=10)
     amp = build_amp(train_config)

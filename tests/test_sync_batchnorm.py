@@ -1,11 +1,9 @@
-from dataclasses import replace
-
 import numpy as np  # noqa: F401 - initialize the conda runtime before torch
 import pytest
 import torch
 from torch import nn
 
-from src.config import ExperimentConfig, ModelConfig, load_experiment_config
+from src.config import ModelConfig
 from src.modules.jpeg_branch import JPEGFrameBatchNorm2d
 from src.training.builders import build_model
 from src.training.distributed import TrainingRuntime
@@ -17,113 +15,46 @@ def _small_fusion():
     from src.modules.forensic_fusion import ForensicFusion
     from src.modules.sync_batchnorm import SynchronizedBatchNorm
 
-    fusion = ForensicFusion((4, 8, 16, 32), (4, 8, 16, 32), (8, 16, 32), forensic_mode='jpeg')
+    fusion = ForensicFusion((4, 8, 16, 32), (4, 8, 16, 32), (8, 16, 32))
     SynchronizedBatchNorm.apply(SimpleNamespace(encoder=nn.Identity(), decoder=nn.Identity(), forensic_fusion=fusion))
     features = [torch.randn(2, c, 64 // s, 64 // s, requires_grad=True)
                 for s, c in zip((4, 8, 16, 32), (4, 8, 16, 32), strict=True)]
     return fusion, features
 
 
-@pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize('batch_size', [0, 2])
-def test_fusion_syncbn_uses_fp32_collectives_for_empty_and_nonempty_amp_inputs(monkeypatch, dtype, batch_size):
-    fusion, _ = _small_fusion()
-    layer = fusion.fusion_blocks['8'].fusion[1]
-    monkeypatch.setattr(torch.distributed, 'is_initialized', lambda: True)
-    monkeypatch.setattr(torch.distributed, 'get_world_size', lambda: 2)
-    seen = []
-
-    def collectives(self, value):
-        seen.append(value.dtype)
-        return value * 2
-
-    monkeypatch.setattr(nn.SyncBatchNorm, 'forward', collectives)
-    x = torch.ones(batch_size, 8, 4, 4, dtype=dtype, requires_grad=True)
-    result = layer(x)
-    assert seen == [torch.float32]
-    assert result.dtype == dtype
-    result.sum().backward()
-    torch.testing.assert_close(x.grad, torch.full_like(x, 2))
-
-
-@pytest.mark.parametrize('remote_available', [False, True])
-def test_empty_jpeg_rank_participates_only_when_another_rank_has_jpeg(monkeypatch, remote_available):
+def test_empty_and_mixed_jpeg_batches_need_no_fusion_collectives(monkeypatch):
     fusion, features = _small_fusion()
-    monkeypatch.setattr(fusion, '_global_jpeg_available', lambda count, reference: remote_available)
-    calls = []
-    for module in fusion.fusion_blocks.modules():
-        if isinstance(module, nn.SyncBatchNorm):
-            module.register_forward_pre_hook(lambda module, args: calls.append(args[0].shape[0]))
-    output = fusion(features, None, jpeg=[{'available': False}, {'available': False}])
+
+    def unexpected_collective(*args, **kwargs):
+        pytest.fail('Local fusion must not synchronize variable native JPEG batches')
+
+    monkeypatch.setattr(torch.distributed, 'all_reduce', unexpected_collective)
+    output = fusion(features, jpeg=[{'available': False}, {'available': False}])
     for original, actual in zip(features, output, strict=True):
         torch.testing.assert_close(actual, original, rtol=0, atol=0)
-    sum(value.square().mean() for value in output).backward()
-    assert calls == ([0, 0, 0] if remote_available else [])
-    if remote_available:
-        assert all(parameter.grad is not None and torch.isfinite(parameter.grad).all()
-                   for parameter in fusion.fusion_blocks.parameters())
-
-
-def test_mixed_jpeg_batch_checks_global_availability_once(monkeypatch):
-    fusion, features = _small_fusion()
-    calls = []
-
-    def availability(count, reference):
-        calls.append(count)
-        return True
-
-    monkeypatch.setattr(fusion, '_global_jpeg_available', availability)
     sample = dict(bins=torch.zeros(64, 64, dtype=torch.uint8), qtable=torch.ones(8, 8),
                   geometry=(0, 0, 64, 64, 0, 0, 0))
-    output = fusion(features, None, jpeg=[{'available': False}, sample])
+    output = fusion(features, jpeg=[{'available': False}, sample])
     sum(value.square().mean() for value in output).backward()
-    assert calls == [1]
     for original, actual in zip(features, output, strict=True):
         torch.testing.assert_close(original[0], actual[0], rtol=0, atol=0)
 
 
-def test_sync_batchnorm_config_is_opt_in_and_boolean():
-    assert ModelConfig().sync_batchnorm is False
-    assert ModelConfig(sync_batchnorm=True).sync_batchnorm is True
-    for value in ('true', 1, None):
-        with pytest.raises(ValueError, match='sync_batchnorm'):
-            ModelConfig(sync_batchnorm=value)
+def test_sync_conversion_preserves_checkpoint_structure_and_native_normalization():
+    from src.modules.segmenter import Segmenter
+    from src.modules.sync_batchnorm import SynchronizedBatchNorm
 
-
-@pytest.mark.parametrize('variant', ['local', 'spatial', 'cross_attention'])
-def test_fusion_without_batchnorm_does_not_add_collectives(variant):
     with torch.device('meta'):
-        model = build_model(ModelConfig(forensic_mode='jpeg', fusion_variant=variant, sync_batchnorm=True),
-                            pretrained=False)
-    assert model.forensic_fusion.sync_batchnorm is False
-
-
-def test_sync_recipe_preserves_baseline_and_checkpoint_structure():
-    from src.budget import count_gflops
-    from src.inference.submission import InferenceConfig
-
-    base = load_experiment_config('configs/jpeg640_pretrained.yaml')
-    cfg = load_experiment_config('configs/jpeg640_pretrained_syncbn.yaml')
-    assert cfg.model == replace(base.model, sync_batchnorm=True)
-    for name in ('train', 'dataset', 'eval', 'loss', 'augmentation'):
-        assert getattr(cfg, name) == getattr(base, name)
-    assert ExperimentConfig.from_dict(cfg.to_dict()).model == cfg.model
-    assert InferenceConfig.from_snapshot(cfg.to_flat_dict()).model == cfg.model
-    with torch.device('meta'):
-        reference = build_model(base.model, pretrained=False)
-        model = build_model(cfg.model, pretrained=False)
+        reference = Segmenter(pretrained=False)
+        model = SynchronizedBatchNorm.apply(Segmenter(pretrained=False))
     assert reference.state_dict().keys() == model.state_dict().keys()
-    model.load_state_dict(reference.state_dict(), strict=True)
-    reference.load_state_dict(model.state_dict(), strict=True)
-    assert count_gflops(model, 640, native_size=(1080, 1920)) == count_gflops(
-        reference, 640, native_size=(1080, 1920))
     assert any(isinstance(layer, nn.SyncBatchNorm) for layer in model.decoder.modules())
     assert all(not isinstance(layer, nn.SyncBatchNorm)
                for layer in model.forensic_fusion.branch.modules())
     assert any(isinstance(layer, JPEGFrameBatchNorm2d)
                for layer in model.forensic_fusion.branch.modules())
-    assert any(isinstance(layer, nn.SyncBatchNorm)
-               for layer in model.forensic_fusion.fusion_blocks.modules())
+    assert not any(isinstance(layer, nn.SyncBatchNorm)
+                   for layer in model.forensic_fusion.fusion_blocks.modules())
 
 
 @pytest.mark.parametrize('device', ['cpu', 'cuda'])
@@ -131,9 +62,9 @@ def test_sync_checkpoint_inference_parity_and_single_device_training(device):
     if device == 'cuda' and not torch.cuda.is_available():
         pytest.skip('CUDA unavailable')
     torch.set_num_threads(1)
-    cfg = ModelConfig(forensic_mode='jpeg')
-    reference = build_model(cfg, pretrained=False).to(device).eval()
-    model = build_model(replace(cfg, sync_batchnorm=True), pretrained=False).to(device).eval()
+    from src.modules.segmenter import Segmenter
+    reference = Segmenter(pretrained=False).to(device).eval()
+    model = build_model(ModelConfig(), pretrained=False).to(device).eval()
     model.load_state_dict(reference.state_dict(), strict=True)
     image = torch.randn(2, 3, 64, 64, device=device)
     jpeg = [dict(bins=torch.randint(0, 21, (64, 64), device=device, dtype=torch.uint8),
@@ -153,22 +84,6 @@ def test_sync_checkpoint_inference_parity_and_single_device_training(device):
     grad = model.forensic_fusion.branch.artifact.dc_layer0_dil[0].weight.grad
     assert torch.isfinite(grad).all() and grad.abs().sum() > 0
     optimizer.step()
-
-
-def test_resume_cannot_silently_switch_batchnorm_mode(tmp_path):
-    from src.training.engine import ExperimentRunner
-    from src.training.runs import Run
-
-    base = load_experiment_config('configs/jpeg640_pretrained.yaml')
-    cfg = replace(base, paths=replace(base.paths, runs_path=tmp_path),
-                  train=replace(base.train, device='cpu', resume=True))
-    run = Run.create(tmp_path, cfg.paths.run_name)
-    run.save_snapshot(cfg.to_flat_dict())
-    (run.dir / 'ckpt').mkdir(exist_ok=True)
-    (run.dir / 'ckpt/last.pt').touch()
-    changed = replace(cfg, model=replace(cfg.model, sync_batchnorm=True))
-    with pytest.raises(ValueError, match='sync_batchnorm'):
-        ExperimentRunner(changed)._check_resume_protocol()
 
 
 @pytest.mark.parametrize('device,world_size,backend,allowed', [
@@ -197,7 +112,7 @@ class _FusionProbe(nn.Module):
                 block.channel_gate.fill_(0.1)
 
     def forward(self, features, jpeg):
-        return self.fusion([value * self.scale for value in features], None, jpeg=jpeg)
+        return self.fusion([value * self.scale for value in features], jpeg=jpeg)
 
 
 def _nccl_sync_worker(rank, folder):
@@ -256,7 +171,7 @@ def _nccl_sync_worker(rank, folder):
         del ddp, probe
 
         # Exercise actual decoder/fusion backward ordering, not just the probe.
-        model = build_model(ModelConfig(forensic_mode='jpeg', sync_batchnorm=True), pretrained=False).to(device)
+        model = build_model(ModelConfig(), pretrained=False).to(device)
         for block in model.forensic_fusion.fusion_blocks.values():
             with torch.no_grad():
                 block.channel_gate.fill_(0.1)

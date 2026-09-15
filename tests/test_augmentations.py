@@ -6,6 +6,7 @@ from src.data.augmentation.pipeline import AugmentationPipeline
 from src.data.augmentation.transforms.random_dct_aligned_crop import RandomDCTAlignedCrop
 from src.data.augmentation.transforms.random_rotate_flip import RandomRotateFlip
 from src.data.data_sample import DataSample
+from src.forensic.jpeg_input import JPEGInput
 
 
 @pytest.mark.parametrize("seed", range(10))
@@ -15,7 +16,8 @@ def test_crop_and_flip_keep_image_mask_and_dct_blocks_aligned(seed):
     sample = DataSample(
         image=np.repeat(pixels[..., None], 3, axis=2),
         mask=pixels.copy(),
-        fmap=np.repeat(blocks[None], 12, axis=0),
+        jpeg=JPEGInput(np.zeros(pixels.shape, np.uint8), np.ones((8, 8), np.float32),
+                       (0, 0, *pixels.shape, 0, 0, 0)),
     )
     rng = np.random.default_rng(seed)
     cropped = RandomDCTAlignedCrop((0.25, 0.5), full_frame=False).apply(sample, rng)
@@ -23,10 +25,11 @@ def test_crop_and_flip_keep_image_mask_and_dct_blocks_aligned(seed):
 
     assert cropped.image.shape[0] < sample.image.shape[0]
     np.testing.assert_array_equal(transformed.image[..., 0], transformed.mask)
-    for channel in transformed.fmap:
-        np.testing.assert_array_equal(channel.repeat(8, axis=0).repeat(8, axis=1), transformed.mask)
+    top, left, height, width, rotations, horizontal, vertical = transformed.jpeg.geometry
+    expected = pixels[top:top+height, left:left+width]
+    expected = RandomRotateFlip.rotate_flip(expected, rotations, horizontal, vertical, (0, 1))
+    np.testing.assert_array_equal(expected, transformed.mask)
     assert transformed.image.flags.c_contiguous
-    assert transformed.fmap.flags.c_contiguous
 
 
 def test_default_augmentation_schedule():
@@ -55,7 +58,7 @@ def test_crop_and_final_full_frame_geometry(total_epochs, final_epochs, expected
     blocks = np.arange(16 * 20, dtype=np.float32).reshape(16, 20)
     pixels = blocks.repeat(8, axis=0).repeat(8, axis=1)
     sample = DataSample(image=np.repeat(pixels[..., None], 3, axis=2),
-                        mask=pixels.copy(), fmap=blocks[None])
+                        mask=pixels.copy())
     pipeline = AugmentationPipeline(AugmentationConfig(
         crop_scale_range=(0.25, 0.5), full_frame_probability=0,
         final_full_frame_epochs=final_epochs), total_epochs=total_epochs)
@@ -68,4 +71,3 @@ def test_crop_and_final_full_frame_geometry(total_epochs, final_epochs, expected
         else:
             assert output.image.size < sample.image.size
         np.testing.assert_array_equal(output.image[..., 0], output.mask)
-        np.testing.assert_array_equal(output.fmap[0].repeat(8, 0).repeat(8, 1), output.mask)

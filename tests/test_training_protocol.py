@@ -43,8 +43,7 @@ def sample_with_small_mask():
     pixels = blocks.repeat(8, 0).repeat(8, 1)
     mask = np.zeros(pixels.shape, np.float32)
     mask[170:172, 230:232] = 1.0  # SampleIO returns binary float targets.
-    return DataSample(np.repeat(pixels[..., None], 3, 2), mask=mask,
-                      fmap=np.repeat(blocks[None], 12, 0))
+    return DataSample(np.repeat(pixels[..., None], 3, 2), mask=mask)
 
 
 def test_foreground_crop_keeps_small_gt_and_dct_alignment():
@@ -52,7 +51,9 @@ def test_foreground_crop_keeps_small_gt_and_dct_alignment():
     for seed in range(20):
         result = crop.apply(sample_with_small_mask(), np.random.default_rng(seed))
         assert result.mask.max() == 1.0
-        np.testing.assert_array_equal(result.image[..., 0], result.fmap[0].repeat(8, 0).repeat(8, 1))
+        assert result.image.shape[0] % 8 == result.image.shape[1] % 8 == 0
+        block = result.image[::8, ::8, 0]
+        np.testing.assert_array_equal(result.image[..., 0], block.repeat(8, 0).repeat(8, 1))
 
 
 def test_mixed_frames_and_final_full_frame_epochs():
@@ -87,7 +88,7 @@ def test_resume_rejects_changed_validation_before_overwriting_run(tmp_path):
     config = load_experiment_config("configs/baseline.yaml")
     config = replace(config, paths=replace(config.paths, runs_path=tmp_path),
                      train=replace(config.train, resume=True))
-    run = Run.create(tmp_path, config.paths.run_name, tensorboard=False)
+    run = Run.create(tmp_path, config.run_name, tensorboard=False)
     run.save_snapshot({"resolution": "resized"})
     (run.dir / "ckpt" / "last.pt").touch()
     with pytest.raises(ValueError, match="pipeline"):

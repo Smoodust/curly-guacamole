@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from src.data.augmentation.base import AIIJCAugmentation, AugmentationStage, require_fmap, require_rng
+from src.data.augmentation.base import AIIJCAugmentation, AugmentationStage, require_rng
 from src.data.data_sample import DataSample
 
 
@@ -33,7 +33,6 @@ class RandomRotateFlip(AIIJCAugmentation):
 
     def apply(self, sample: DataSample, rng: np.random.Generator | None = None) -> DataSample:
         rng = require_rng(rng, AugmentationStage.AFTER_FORENSICS)
-        fmap = require_fmap(sample)
 
         rotations = 0 if self.full_frame else int(rng.integers(4))
         flip_horizontal = rng.random() < 0.5
@@ -45,13 +44,6 @@ class RandomRotateFlip(AIIJCAugmentation):
             flip_horizontal,
             flip_vertical,
             spatial=(0, 1),
-        )
-        fmap = self.rotate_flip(
-            fmap,
-            rotations,
-            flip_horizontal,
-            flip_vertical,
-            spatial=(1, 2),
         )
         mask = (
             self.rotate_flip(
@@ -67,4 +59,4 @@ class RandomRotateFlip(AIIJCAugmentation):
 
         jpeg = (sample.jpeg.transform(rotations, flip_horizontal, flip_vertical)
                 if sample.jpeg is not None else None)
-        return replace(sample, image=image, mask=mask, fmap=fmap, jpeg=jpeg)
+        return replace(sample, image=image, mask=mask, jpeg=jpeg)

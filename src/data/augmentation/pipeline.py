@@ -14,7 +14,7 @@ from src.data.data_sample import DataSample
 
 
 class AugmentationPipeline:
-    """Stage-based synchronous augmentations for image/mask/forensic-map."""
+    """Stage-based synchronous augmentations for image, mask and native JPEG geometry."""
 
     def __init__(
             self,

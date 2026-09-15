@@ -1,5 +1,0 @@
-extends: jpeg576.yaml
-paths:
-  run_name: jpeg576_pretrained
-model:
-  jpeg_pretrained: DCT_djpeg.pth

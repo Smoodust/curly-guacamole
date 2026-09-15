@@ -1,5 +1,4 @@
-import cv2
-import numpy as np
+import numpy as np  # noqa: F401 -- Initialize NumPy before torch on Windows.
 import torch
 
 from src.config import TrainConfig

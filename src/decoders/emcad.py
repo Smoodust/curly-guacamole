@@ -3,7 +3,7 @@
 Reference: Rahman et al., CVPR 2024, https://arxiv.org/abs/2405.06880.
 Implements parallel additive multi-scale convolutions and a shared spatial
 attention map predictor. Auxiliary supervision defaults to the final merged
-skip before refinement, with optional post-refinement stride 8/16 positions.
+skip before refinement.
 The paper's multi-head training scheme is not reproduced.
 """
 
@@ -14,7 +14,6 @@ import torch.nn.functional as F
 from torch import nn
 
 from .layers import make_norm
-from .refinement import RGBLogitRefinement, SpatialResidualRefinement
 
 
 class ChannelAttention(nn.Module):
@@ -120,24 +119,8 @@ class EMCADDecoder(nn.Module):
 
     def __init__(self, encoder_channels, encoder_strides, norm='batch', use_aux=False,
                  kernel_sizes=(1, 3, 5), expansion_factor=2, lgag_kernel_size=3,
-                 activation='relu', output_refinement_channels=0,
-                 rgb_refinement_channels=0, rgb_detail_channels=24,
-                 aux_position='pre_refine_4'):
+                 activation='relu'):
         super().__init__()
-        aux_stages = {'pre_refine_4': 3, 'post_refine_8': 2, 'post_refine_16': 1}
-        if aux_position not in aux_stages:
-            raise ValueError(f'unknown aux_position: {aux_position}')
-        self.aux_stage = aux_stages[aux_position]
-        self.aux_before_refine = aux_position == 'pre_refine_4'
-        for name, value in (('output_refinement_channels', output_refinement_channels),
-                            ('rgb_refinement_channels', rgb_refinement_channels),
-                            ('rgb_detail_channels', rgb_detail_channels)):
-            if type(value) is not int or value < 0:
-                raise ValueError(f'{name} must be a nonnegative integer')
-        if output_refinement_channels and rgb_refinement_channels:
-            raise ValueError('Choose one refinement experiment at a time')
-        if rgb_refinement_channels and not rgb_detail_channels:
-            raise ValueError('RGB refinement requires positive rgb_detail_channels')
         if len(encoder_channels) != 4 or tuple(encoder_strides) != (4, 8, 16, 32):
             raise ValueError('EMCAD requires four encoder scales at strides 4, 8, 16, 32')
         if any(c < 2 or c % 2 for c in encoder_channels):
@@ -160,27 +143,14 @@ class EMCADDecoder(nn.Module):
             for c in channels
         ])
         self.upsample = nn.ModuleList([
-            EfficientUpsample(a, b, norm) for a, b in zip(channels, channels[1:])
+            EfficientUpsample(a, b, norm) for a, b in zip(channels, channels[1:], strict=False)
         ])
         self.gates = nn.ModuleList([
             GroupedAttentionGate(c, lgag_kernel_size, norm) for c in channels[1:]
         ])
         self.out_channels = channels[-1]
         self.output_stride = 4
-        self.aux_head = nn.Conv2d(channels[self.aux_stage], 1, 1) if use_aux else None
-        self.output_refinement = (
-            SpatialResidualRefinement(self.out_channels, output_refinement_channels, norm)
-            if output_refinement_channels else nn.Identity()
-        )
-        self.rgb_refinement = (
-            RGBLogitRefinement(self.out_channels, rgb_refinement_channels, rgb_detail_channels, norm)
-            if rgb_refinement_channels else None
-        )
-
-    def refine_logits(self, image, features, logits):
-        if self.rgb_refinement is None:
-            return logits
-        return self.rgb_refinement(image, features, logits)
+        self.aux_head = nn.Conv2d(channels[3], 1, 1) if use_aux else None
 
     def forward(self, encoder_features):
         if len(encoder_features) != 4:
@@ -188,15 +158,13 @@ class EMCADDecoder(nn.Module):
         skips = list(reversed(encoder_features))
         features = skips[0]
         aux_logits = None
-        for stage, (attention, refine) in enumerate(zip(self.channel_attention, self.refinement)):
+        for stage, (attention, refine) in enumerate(zip(self.channel_attention, self.refinement, strict=True)):
             if stage:
                 skip = skips[stage]
                 features = self.upsample[stage - 1](features, skip.shape[-2:])
                 features = features + self.gates[stage - 1](features, skip)
-            supervise = stage == self.aux_stage and self.training and self.aux_head is not None
-            if supervise and self.aux_before_refine:
+            supervise = stage == 3 and self.training and self.aux_head is not None
+            if supervise:
                 aux_logits = self.aux_head(features)
             features = refine(self.spatial_attention(attention(features)))
-            if supervise and not self.aux_before_refine:
-                aux_logits = self.aux_head(features)
-        return self.output_refinement(features), aux_logits
+        return features, aux_logits

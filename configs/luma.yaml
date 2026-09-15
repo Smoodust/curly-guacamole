@@ -1,5 +1,0 @@
-extends: positive_dice.yaml
-paths:
-  run_name: luma
-model:
-  luma_image_size: 1024

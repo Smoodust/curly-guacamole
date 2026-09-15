@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+
 from src.forensic.jpeg_input import JPEGInput
 
 
@@ -11,7 +12,5 @@ from src.forensic.jpeg_input import JPEGInput
 class DataSample:
     image: Any
     mask: np.ndarray | None = None
-    fmap: np.ndarray | None = None
     qtable: np.ndarray | None = None
-    content_size: tuple[int, int] | None = None
     jpeg: JPEGInput | None = None

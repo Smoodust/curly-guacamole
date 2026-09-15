@@ -11,11 +11,11 @@ from src.training.engine import ExperimentRunner
 def test_pretrained_skipped_only_when_checkpoint_is_available(tmp_path, monkeypatch, resume, exists, expected):
     import src.training.engine as engine
 
-    cfg = load_experiment_config('configs/rgb576.yaml')
+    cfg = load_experiment_config('configs/baseline.yaml')
     cfg = replace(cfg, paths=replace(cfg.paths, runs_path=tmp_path),
                   train=replace(cfg.train, resume=resume, device='cpu'))
     if exists:
-        checkpoint = tmp_path / cfg.paths.run_name / 'ckpt' / 'last.pt'
+        checkpoint = tmp_path / cfg.run_name / 'ckpt' / 'last.pt'
         checkpoint.parent.mkdir(parents=True)
         checkpoint.touch()
     calls = []
@@ -24,7 +24,7 @@ def test_pretrained_skipped_only_when_checkpoint_is_available(tmp_path, monkeypa
         def to(self, device):
             return self
 
-    def build(config, *, pretrained):
+    def build(config, *, pretrained, aux_weight):
         calls.append(pretrained)
         return Model()
 

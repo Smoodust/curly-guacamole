@@ -1,5 +1,0 @@
-extends: jpeg576_pretrained.yaml
-paths:
-  run_name: jpeg576_pretrained_subblock4
-model:
-  jpeg_variant: subblock4

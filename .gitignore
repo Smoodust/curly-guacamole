@@ -23,34 +23,16 @@ htmlcov/
 venv/
 env/
 
-# Project artifacts
-runs/*
-!runs/*/
-runs/*/*
-!runs/*/notes.md
-!runs/.gitkeep
-!runs/__init__.py
-!runs/archive/
-!runs/archive/*/
-runs/archive/*/*
-!runs/archive/*/notes.md
+# Local run artifacts and model weights (historical tracked notes remain tracked).
+runs/
 *.pt
 *.pth
 *.ckpt
 *.onnx
 
-# Competition submissions
+# Competition submissions and temporary audits
 submissions/
 submission.zip
 predictions/
-docs/*
-!docs/luma_branch.md
-!docs/jpeg_ablation.md
-!docs/strided_resize.md
-!docs/jpeg_fusion_experiments.md
-!docs/forensic_intra_contrastive.md
-!docs/dual_encoder.md
-!docs/jpeg_pair_consistency.md
-
 tmp/
-runs/
+%SystemDrive%/

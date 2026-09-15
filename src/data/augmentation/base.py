@@ -44,9 +44,3 @@ def require_rng(
     if rng is None:
         raise ValueError(f"{stage.value} augmentations require rng")
     return rng
-
-
-def require_fmap(sample: DataSample) -> np.ndarray:
-    if sample.fmap is None:
-        raise ValueError("forensic map is required for this augmentation stage")
-    return sample.fmap

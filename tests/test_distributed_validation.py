@@ -69,8 +69,7 @@ def _validation_worker(rank, folder, device='cpu'):
         runtime = TrainingRuntime(device, rank, 2)
         config = _cpu_config()
         config = replace(config, train=replace(config.train, device=device),
-                         loss=replace(config.loss, dice_scope='positive'),
-                         eval=replace(config.eval, small_mask_weight=3.,
+                         eval=replace(config.eval, selection_small_mask_weight=3.,
                                       mask_thresholds=(.25, .5, .75), cls_thresholds=(0., .5)))
         amp = build_amp(config.train)
         model = PredictionModel().to(device)

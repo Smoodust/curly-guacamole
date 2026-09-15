@@ -5,10 +5,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-from src.training.transfer import BatchTransfer
 
-from src.data.letterbox import Letterbox
+from src.data.geometry import restore_probability
 from src.training.builders import AmpContext
+from src.training.transfer import BatchTransfer
 
 
 @dataclass(frozen=True)
@@ -41,35 +41,21 @@ class Predictor:
         for batch in loader:
             # Leave inference/autocast contexts before yielding to caller code.
             with torch.inference_mode(), self.amp.autocast():
-                kwargs = ({"valid_mask": batch["valid_mask"].to(self.amp.device)}
-                          if "valid_mask" in batch else {})
-                if 'jpeg' in batch:
-                    kwargs['jpeg'] = BatchTransfer.move_jpeg(batch['jpeg'], self.amp.device)
-                if 'local_input' in batch:
-                    kwargs['local_input'] = batch['local_input'].to(self.amp.device, non_blocking=True)
-                if 'native_rgb' in batch:
-                    kwargs['native_rgb'] = [rgb.to(self.amp.device, non_blocking=True) for rgb in batch['native_rgb']]
-                output = self.model(
-                    batch["image"].to(self.amp.device),
-                    batch["fmap"].to(self.amp.device) if "fmap" in batch else None,
-                    **kwargs,
-                )
+                kwargs = {'jpeg': BatchTransfer.move_jpeg(batch['jpeg'], self.amp.device)} if 'jpeg' in batch else {}
+                output = self.model(batch['image'].to(self.amp.device), **kwargs)
                 probabilities = output["logits"].float().sigmoid()
                 cls_probs = output["cls_logits"].float().sigmoid().flatten()
             for index, image_path in enumerate(batch["image_path"]):
                 size = tuple(int(value) for value in batch["original_size"][index])
-                content = batch["content_size"][index] if "content_size" in batch else None
-                mask = self.binary_mask(probabilities[index:index + 1], float(cls_probs[index]), size,
-                                        content_size=content)
+                mask = self.binary_mask(probabilities[index:index + 1], float(cls_probs[index]), size)
                 yield Prediction(image_path, mask)
 
     def binary_mask(
         self, probability: torch.Tensor, cls_probability: float, size: tuple[int, int],
-        *, content_size=None,
     ) -> np.ndarray:
         if len(size) != 2 or min(size) <= 0:
             raise ValueError("original size must contain positive height and width")
-        restored = Letterbox.restore(probability, size, content_size)
+        restored = restore_probability(probability, size)
         mask = restored[0, 0].cpu().numpy() >= self.thresholds.mask_threshold
         if cls_probability < self.thresholds.cls_threshold or mask.mean() < self.thresholds.min_area:
             mask[:] = False

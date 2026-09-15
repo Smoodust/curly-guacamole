@@ -9,11 +9,10 @@ from PIL import Image
 from src.data.augmentation.base import AugmentationConfig, AugmentationStage
 from src.data.augmentation.pipeline import AugmentationPipeline
 from src.data.augmentation.transforms.random_jpeg_recompression import RandomJPEGRecompression
-from src.data.data_workspace import DataWorkspace
 from src.data.data_sample import DataSample
+from src.data.data_workspace import DataWorkspace
 from src.data.dataset import AIIJCDataset
-from src.forensic.dct import forensic_maps
-from src.forensic.dct.jpeg import luma_qtable
+from src.forensic.jpeg import luma_qtable
 
 
 def jpeg_bytes():
@@ -70,7 +69,7 @@ def test_pipeline_recompression_uses_natural_table():
     np.testing.assert_array_equal(sample.image, expected_rgb)
 
 
-def test_dataset_uses_natural_table_for_forensic_maps(tmp_path):
+def test_dataset_uses_natural_table_for_native_jpeg(tmp_path):
     workspace = DataWorkspace(tmp_path)
     workspace.train_root.mkdir()
     image_path = workspace.train_root / "image.jpg"
@@ -78,8 +77,5 @@ def test_dataset_uses_natural_table_for_forensic_maps(tmp_path):
     Image.new("L", (48, 32), 255).save(workspace.train_root / "mask.png")
     rows = pd.DataFrame({"chng_img_path": ["image.jpg"], "gt_path": ["mask.png"]})
     dataset = AIIJCDataset(workspace, rows, False, 32, 42, mode="val")
-    rgb = dataset.load_image(image_path)
-    table = np.arange(1, 65, dtype=np.float32).reshape(8, 8)
-    sample = DataSample(image=rgb, fmap=forensic_maps(rgb, table))
-    expected = dataset.preprocessor.to_output(dataset.preprocessor.resize(sample))["fmap"]
-    np.testing.assert_allclose(dataset[0]["fmap"].numpy(), expected.numpy())
+    expected = np.arange(1, 65, dtype=np.float32).reshape(8, 8)
+    np.testing.assert_array_equal(dataset[0]["jpeg"]["qtable"].numpy(), expected)

@@ -1,6 +1,0 @@
-extends: positive_dice.yaml
-paths:
-  run_name: positive_dice_weighted_val
-eval:
-  # Weight positive images whose original GT occupies (1%, 5%] of the frame.
-  small_mask_weight: 1.6

@@ -46,7 +46,7 @@ def test_weights_use_gt_fraction_with_exact_boundaries_and_leave_fpr_unweighted(
 @pytest.mark.parametrize('weight', [0, -1, float('nan'), float('inf'), True])
 def test_rejects_invalid_weight(weight):
     with pytest.raises(ValueError, match='small_mask_weight'):
-        EvalConfig(small_mask_weight=weight)
+        EvalConfig(selection_small_mask_weight=weight)
 
 
 def test_old_oof_defaults_to_official_metric(tmp_path):
@@ -71,9 +71,9 @@ def test_yaml_controls_validation_selection_and_keeps_official_report():
     from src.training.builders import build_amp
     from src.training.validation import validate
 
-    config = load_experiment_config('configs/positive_dice_weighted_val.yaml')
-    assert config.eval.small_mask_weight == 1.6
-    assert config.to_flat_dict()['small_mask_weight'] == 1.6
+    config = load_experiment_config('configs/baseline.yaml')
+    assert config.eval.selection_small_mask_weight == 1.6
+    assert config.to_flat_dict()['selection_small_mask_weight'] == 1.6
     config = replace(config, train=replace(config.train, device='cpu', amp='off'),
                      eval=replace(config.eval, n_bins=4, mask_thresholds=(.25, .75), cls_thresholds=(0.,)))
     gt = torch.zeros(3, 1, 100, 100)
@@ -108,14 +108,14 @@ def test_resume_rejects_weight_change_before_writing_snapshot(tmp_path):
     from src.training.engine import ExperimentRunner
     from src.training.runs import Run
 
-    config = load_experiment_config('configs/positive_dice_weighted_val.yaml')
+    config = load_experiment_config('configs/baseline.yaml')
     config = replace(config, paths=replace(config.paths, runs_path=tmp_path),
                      train=replace(config.train, device='cpu', amp='off', resume=True))
-    run = Run.create(tmp_path, config.paths.run_name, tensorboard=False)
+    run = Run.create(tmp_path, config.run_name, tensorboard=False)
     snapshot = config.to_flat_dict()
-    snapshot.pop('small_mask_weight')  # A historical run used the implicit weight 1.
+    snapshot['selection_small_mask_weight'] = 1.0  # A historical run used the implicit weight 1.
     run.save_snapshot(snapshot)
     (run.dir/'ckpt/last.pt').touch()
-    with pytest.raises(ValueError, match='eval.small_mask_weight'):
+    with pytest.raises(ValueError, match='evaluation settings'):
         ExperimentRunner(config)._check_resume_protocol()
-    assert 'small_mask_weight' not in run.snapshot
+    assert run.snapshot['selection_small_mask_weight'] == 1.0

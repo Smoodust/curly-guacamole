@@ -255,8 +255,7 @@ def _worker(payload_path, rank):
     payload = json.loads(payload_path.read_text(encoding='utf-8'))
     config = ExperimentConfig.from_dict(payload['config'])
     paths = payload['config']['paths']
-    config = replace(config, paths=PathsConfig(Path(paths['data_path']), Path(paths['runs_path']),
-                                               paths['run_name']))
+    config = replace(config, paths=PathsConfig(Path(paths['data_path']), Path(paths['runs_path'])))
     device = f"cuda:{payload['devices'][rank]}" if config.train.device.startswith('cuda') else config.train.device
     if device.startswith('cuda'):
         torch.cuda.set_device(device)

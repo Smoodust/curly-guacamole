@@ -1,4 +1,3 @@
-from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -15,17 +14,17 @@ class Rows(torch.utils.data.Dataset):
         return 11
 
     def __getitem__(self, index):
-        return index
+        return {"index": index}
 
 
 def test_final_pass_covers_every_row_including_partial_batch():
-    cfg = TrainConfig(device='cpu', workers=0, epochs=5, epoch_size=8,
-                      batch_size=3, accum_steps=2, full_train_epochs=1)
+    cfg = TrainConfig(device='cpu', workers=0, epochs=5, samples_per_epoch=8,
+                      batch_size=3, grad_accum_steps=2, full_pass_epochs=1)
     loader, _ = build_loaders(cfg, Rows(), Rows())
     assert len(loader) == 3
     loader.sampler.set_epoch(4)
     assert len(loader) == 4
-    seen = torch.cat(list(loader)).tolist()
+    seen = torch.cat([batch["index"] for batch in loader]).tolist()
     assert sorted(seen) == list(range(11))
     loader.sampler.generator = torch.Generator().manual_seed(42)
     first = list(loader.sampler)
@@ -34,7 +33,7 @@ def test_final_pass_covers_every_row_including_partial_batch():
 
 
 def test_full_train_schedule_and_resume():
-    cfg = TrainConfig(epochs=5, full_train_epochs=1, warmup_frac=.05,
+    cfg = TrainConfig(epochs=5, full_pass_epochs=1, warmup_fraction=.05,
                       min_lr_factor=.1)
     parameter = torch.nn.Parameter(torch.zeros(()))
     opt = torch.optim.SGD([parameter], lr=1.)
@@ -54,23 +53,25 @@ def test_full_train_schedule_and_resume():
     other = build_scheduler(cfg, other_opt, 10, full_steps_per_epoch=30)
     other_opt.load_state_dict(saved_opt)
     other.load_state_dict(saved_sched)
-    opt.step(); scheduler.step()
-    other_opt.step(); other.step()
+    opt.step()
+    scheduler.step()
+    other_opt.step()
+    other.step()
     assert other.get_last_lr() == scheduler.get_last_lr()
 
 
 def test_recipe():
-    cfg = load_experiment_config('configs/positive_dice_full_train.yaml')
-    assert cfg.train.epochs == 5
-    assert cfg.train.full_train_epochs == 1
-    assert cfg.augmentation.final_full_frame_epochs == 1
-    assert cfg.loss.dice_scope == 'positive'
+    cfg = load_experiment_config('configs/baseline_long.yaml')
+    assert cfg.train.epochs == 18
+    assert cfg.train.full_pass_epochs == 3
+    assert cfg.augmentation.final_full_frame_epochs == 3
+    assert cfg.loss.aux_weight == .4
 
 
 @pytest.mark.parametrize('value', [-1, 1.5, True, 6])
 def test_invalid_full_train_epochs(value):
-    with pytest.raises(ValueError, match='full_train_epochs'):
-        TrainConfig(epochs=5, full_train_epochs=value)
+    with pytest.raises(ValueError, match='full_pass_epochs'):
+        TrainConfig(epochs=5, full_pass_epochs=value)
 
 
 def test_partial_accumulation_keeps_update_scale():
@@ -89,7 +90,7 @@ def test_partial_accumulation_keeps_update_scale():
 
     results = []
     for accum in (1, 4):
-        cfg = _cpu_config(accum_steps=accum, full_train_epochs=1)
+        cfg = _cpu_config(grad_accum_steps=accum, full_pass_epochs=1)
         model = Model()
         amp = build_amp(cfg.train)
         batch = {'image': torch.zeros(1, 3, 2, 2), 'mask': torch.ones(1, 1, 2, 2),

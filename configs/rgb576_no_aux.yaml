@@ -1,5 +1,0 @@
-extends: rgb576.yaml
-paths:
-  run_name: rgb576_no_aux
-model:
-  aux_weight: 0.0

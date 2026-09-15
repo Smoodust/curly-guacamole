@@ -7,8 +7,8 @@ import torch
 
 
 class SampleTimer:
-    STAGES = ('read_image', 'read_mask', 'qtable', 'setup', 'jpeg', 'dct',
-              'geometry', 'photometric', 'local_features', 'local_cast', 'resize', 'tensorize')
+    STAGES = ('read_image', 'read_mask', 'qtable', 'setup', 'jpeg',
+              'geometry', 'resize', 'photometric', 'tensorize')
 
     def __init__(self):
         self.times = dict.fromkeys(self.STAGES, 0.)

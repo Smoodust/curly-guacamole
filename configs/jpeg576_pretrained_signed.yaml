@@ -1,5 +1,0 @@
-extends: jpeg576_pretrained.yaml
-paths:
-  run_name: jpeg576_pretrained_signed
-model:
-  jpeg_variant: signed

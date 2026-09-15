@@ -49,7 +49,7 @@ def test_frozen_validation_uses_requested_thresholds_not_best():
 
     config = load_experiment_config('configs/baseline.yaml')
     config = replace(config, train=replace(config.train, device='cpu', amp='off'),
-                     model=replace(config.model, aux_weight=0),
+                     loss=replace(config.loss, aux_weight=0),
                      eval=replace(config.eval, mask_thresholds=(.5,), cls_thresholds=(0.,), min_areas=(0.,)))
     batch = dict(image=torch.zeros(2, 3, 8, 8), mask=torch.cat([torch.ones(1, 1, 8, 8), torch.zeros(1, 1, 8, 8)]))
     batch['original_mask'] = [m[0].bool() for m in batch['mask']]
